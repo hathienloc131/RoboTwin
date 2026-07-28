@@ -5,14 +5,20 @@ Runs a finetuned GR00T checkpoint against a RoboTwin task for a fixed number of 
 starting at a given seed, with a fixed instruction override, logging a per-trial and
 aggregate success rate and saving one video per trial.
 
-Must be run from the RoboTwin repo root (relative paths below mirror script/eval_policy.py):
+Must be run from the RoboTwin repo root (relative paths below mirror script/eval_policy.py).
+
+If the gr00t package (ego_gr00t repo) is not installed into this environment, point
+--gr00t-path (or the GR00T_REPO_PATH env var) at its repo root -- its own dependencies
+(torch, transformers, tyro, ...) must already be importable here some other way:
 
     python script/eval_gr00t.py --model-path /path/to/checkpoint --task stack_bowls_three \\
-        --instruction "stack the bowls" --num-trials 20 --seed 0
+        --instruction "stack the bowls" --num-trials 20 --seed 0 \\
+        --gr00t-path /path/to/ego_gr00t
 """
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime
@@ -47,6 +53,18 @@ def parse_args():
     )
     parser.add_argument("--camera-name", default="head_camera")
     parser.add_argument("--output-dir", default=None, help="Defaults to eval_result/<task>/GR00T/<task_config>/<timestamp>")
+    parser.add_argument(
+        "--gr00t-path",
+        default=os.environ.get("GR00T_REPO_PATH"),
+        help=(
+            "Path to the ego_gr00t repo root, prepended to sys.path so 'import gr00t' "
+            "resolves without installing the package. Only needed if gr00t is not already "
+            "importable in this environment (e.g. via 'pip install -e /path/to/ego_gr00t'). "
+            "Defaults to the GR00T_REPO_PATH env var. gr00t's own dependencies (torch, "
+            "transformers, tyro, ...) must still be present in this environment some other "
+            "way -- this only makes the gr00t package's source importable, not its deps."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -143,6 +161,9 @@ def run_trial(
 
 def main():
     cli = parse_args()
+
+    if cli.gr00t_path:
+        sys.path.insert(0, cli.gr00t_path)
 
     from test_render import Sapien_TEST
 

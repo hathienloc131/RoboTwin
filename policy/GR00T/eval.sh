@@ -7,6 +7,10 @@
 # Example:
 #   bash policy/GR00T/eval.sh stack_bowls_three demo_randomized /path/to/checkpoint \
 #       "stack the bowls" 20 0 0
+#
+# If the gr00t package isn't installed into this environment, export GR00T_REPO_PATH
+# pointing at the ego_gr00t repo root before calling this script -- script/eval_gr00t.py
+# picks it up automatically (--gr00t-path defaults to that env var).
 
 task_name=${1}
 task_config=${2}
