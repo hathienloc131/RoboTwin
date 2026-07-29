@@ -36,13 +36,16 @@ def get_embodiment_config(robot_file):
     return embodiment_args
 
 
-def main(task_name=None, task_config=None):
+def main(task_name=None, task_config=None, episode_num=None):
 
     task = class_decorator(task_name)
     config_path = f"./task_config/{task_config}.yml"
 
     with open(config_path, "r", encoding="utf-8") as f:
         args = yaml.load(f.read(), Loader=yaml.FullLoader)
+
+    if episode_num is not None:
+        args['episode_num'] = episode_num
 
     args['task_name'] = task_name
 
@@ -243,8 +246,11 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("task_name", type=str)
     parser.add_argument("task_config", type=str)
+    parser.add_argument("-n", "--episode_num", type=int, default=None,
+                         help="Number of demo episodes to collect (overrides episode_num in the task_config yml)")
     parser = parser.parse_args()
     task_name = parser.task_name
     task_config = parser.task_config
+    episode_num = parser.episode_num
 
-    main(task_name=task_name, task_config=task_config)
+    main(task_name=task_name, task_config=task_config, episode_num=episode_num)

@@ -8,17 +8,18 @@ aggregate success rate and saving one video per trial.
 Must be run from the RoboTwin repo root (relative paths below mirror script/eval_policy.py).
 
 If the gr00t package (ego_gr00t repo) is not installed into this environment, point
---gr00t-path (or the GR00T_REPO_PATH env var) at its repo root -- its own dependencies
-(torch, transformers, tyro, ...) must already be importable here some other way:
+--gr00t-path (or the GR00T_REPO_PATH env var) at a conda env's site-packages dir that
+already has gr00t (editable) + its dependencies installed:
 
     python script/eval_gr00t.py --model-path /path/to/checkpoint --task stack_bowls_three \\
         --instruction "stack the bowls" --num-trials 20 --seed 0 \\
-        --gr00t-path /path/to/ego_gr00t
+        --gr00t-path /home/user/miniconda3/envs/ego_gr00t/lib/python3.10/site-packages
 """
 
 import argparse
 import json
 import os
+import site
 import subprocess
 import sys
 from datetime import datetime
@@ -57,12 +58,14 @@ def parse_args():
         "--gr00t-path",
         default=os.environ.get("GR00T_REPO_PATH"),
         help=(
-            "Path to the ego_gr00t repo root, prepended to sys.path so 'import gr00t' "
-            "resolves without installing the package. Only needed if gr00t is not already "
-            "importable in this environment (e.g. via 'pip install -e /path/to/ego_gr00t'). "
-            "Defaults to the GR00T_REPO_PATH env var. gr00t's own dependencies (torch, "
-            "transformers, tyro, ...) must still be present in this environment some other "
-            "way -- this only makes the gr00t package's source importable, not its deps."
+            "Path prepended to sys.path (right before the GR00T policy is constructed, "
+            "after RoboTwin's own env is already loaded) so 'import gr00t' resolves without "
+            "installing the package here. Point it at another conda env's site-packages dir "
+            "(e.g. /home/user/miniconda3/envs/ego_gr00t/lib/python3.10/site-packages) to pull "
+            "in gr00t's dependencies (torch, transformers, ...) too, not just the ego_gr00t "
+            "repo root -- the repo root alone only makes the gr00t package's own source "
+            "importable, its dependencies still need to be present here some other way. "
+            "Defaults to the GR00T_REPO_PATH env var."
         ),
     )
     return parser.parse_args()
@@ -101,6 +104,20 @@ def load_task_args(task_name: str, task_config: str) -> tuple[dict, dict]:
     args["head_camera_w"] = camera_config["w"]
     args["eval_mode"] = True
     return args, camera_config
+
+
+def prioritize_sitedir(path: str) -> None:
+    """Add `path` to sys.path via site.addsitedir (so any .pth files in it -- including
+    PEP 660 editable-install finders, which register via a .pth 'import' line and are
+    invisible to a plain sys.path.insert -- actually get processed), then move every path
+    entry addsitedir just added to the front of sys.path so they're resolved before
+    whatever RoboTwin's own env already has under the same package names (addsitedir only
+    appends by default)."""
+    before = list(sys.path)
+    site.addsitedir(path)
+    new_entries = [p for p in sys.path if p not in before]
+    remaining = [p for p in sys.path if p not in new_entries]
+    sys.path[:] = new_entries + remaining
 
 
 def start_video_writer(task_env, episode_idx: int, video_size: str) -> None:
@@ -162,9 +179,6 @@ def run_trial(
 def main():
     cli = parse_args()
 
-    if cli.gr00t_path:
-        sys.path.insert(0, cli.gr00t_path)
-
     from test_render import Sapien_TEST
 
     Sapien_TEST()
@@ -186,6 +200,17 @@ def main():
     print(f"\033[34mInstruction: {cli.instruction}\033[0m")
 
     task_env = class_decorator(cli.task)
+
+    # Deferred until after RoboTwin's own env (sapien, mplib, numpy, ...) has already
+    # imported and cached its own package versions in sys.modules -- inserting an external
+    # conda env's site-packages any earlier risks shadowing RoboTwin's own numpy/opencv/etc.
+    # with incompatible versions for anything RoboTwin imports afterward. Packages already
+    # cached in sys.modules by this point are unaffected either way (Python won't
+    # re-resolve an already-imported module), so this only changes resolution for
+    # packages RoboTwin's env hasn't touched yet (transformers, torch, ...).
+    if cli.gr00t_path:
+        prioritize_sitedir(cli.gr00t_path)
+
     adapter = GR00TRoboTwinAdapter(
         model_path=cli.model_path,
         embodiment_tag=cli.embodiment_tag,
