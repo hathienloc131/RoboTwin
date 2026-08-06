@@ -46,7 +46,35 @@ script/lerobot/convert_robotwin_to_lerobot.py; pick gr00t_adapter.GR00TRoboTwinA
 only if you actually have the other gr00t.policy.gr00t_policy-based install/branch.
 """
 
+import sys
+
 import numpy as np
+
+# Modules whose already-imported (RoboTwin-env) version can silently poison a
+# separately-injected gr00t conda env's imports, because Python caches by module
+# name in sys.modules -- reordering sys.path via prioritize_sitedir() (see
+# script/eval_gr00t_endpose.py) only changes resolution for names *not yet*
+# imported. pydantic is the concrete case observed in practice: RoboTwin's env
+# has its own (older/incompatible) pydantic pulled in transitively before this
+# adapter is ever constructed, and gr00t's numpydantic (schema generation for
+# dynamically-shaped arrays) needs a newer pydantic than that -- mixing the two
+# crashes with pydantic._internal._schema_gather.MissingDefinitionError /
+# InvalidSchemaError deep inside numpydantic's ndarray schema code, not with a
+# clean ImportError, so it's easy to misdiagnose as a gr00t bug. Purge these
+# module names right before the first `import gr00t...` so they get freshly
+# re-resolved against whatever sys.path priority is in effect at that point
+# (i.e. the gr00t env, if --gr00t-path/prioritize_sitedir already ran).
+_ENV_SENSITIVE_MODULE_PREFIXES = ("pydantic", "pydantic_core", "numpydantic", "annotated_types")
+
+
+def _purge_env_sensitive_modules() -> None:
+    stale = [name for name in sys.modules if name.split(".", 1)[0] in _ENV_SENSITIVE_MODULE_PREFIXES]
+    for name in stale:
+        del sys.modules[name]
+    if stale:
+        print(f"gr00t_adapter_endpose: purged {len(stale)} cached module(s) before importing gr00t: "
+              f"{sorted({n.split('.', 1)[0] for n in stale})}")
+
 
 _ARM_ALIASES = {"l": "left", "left": "left", "r": "right", "right": "right"}
 _FIELD_ALIASES = {
@@ -132,8 +160,12 @@ class GR00TRoboTwinEndposeAdapter:
         device: str = "cuda:0",
         denoising_steps: int = None,
     ):
+        _purge_env_sensitive_modules()
         from gr00t.experiment.data_config import load_data_config
         from gr00t.model.policy import Gr00tPolicy
+
+        import pydantic
+        print(f"gr00t_adapter_endpose: resolved pydantic from {pydantic.__file__} (version {pydantic.VERSION})")
 
         cfg = load_data_config(data_config)
         self.policy = Gr00tPolicy(
