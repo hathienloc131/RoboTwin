@@ -1,0 +1,10 @@
+h5py
+opencv-python
+numpy
+tqdm
+pandas
+pyarrow
+PyYAML
+# lerobot is not pinned here: this repo assumes it's already installed in a
+# dedicated environment (e.g. `conda activate lerobot`). If you need to install
+# it from scratch, see https://github.com/huggingface/lerobot for install docs.
