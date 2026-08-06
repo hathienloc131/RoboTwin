@@ -5,6 +5,12 @@ rot6d) -- the schema script/lerobot/convert_robotwin_to_lerobot.py (this repo)
 produces. Checkpoints trained on data from that converter (or on Isaac-GR00T's
 "equi_robotwin_2hand_quat" data config) are what this script targets.
 
+Talks to gr00t.model.policy.Gr00tPolicy (Isaac-GR00T N1.5's classical API, as
+found in /Users/lochathien/Documents/Code/Isaac-GR00T) via
+policy/GR00T/gr00t_adapter_endpose.py. This requires <model_path>/experiment_cfg/
+metadata.json (produced automatically by the finetuning pipeline's checkpoint-save
+step) and a matching --data-config (default "equi_robotwin_2hand_quat").
+
 For a checkpoint trained on the older MotionTrans/camera-frame/rot6d schema, use
 script/eval_gr00t.py instead -- this script is purely additive and doesn't change
 anything about that one.
@@ -52,7 +58,21 @@ def parse_args():
     parser.add_argument("--num-trials", type=int, required=True)
     parser.add_argument("--seed", type=int, required=True, help="Base seed; trial i uses seed + i")
     parser.add_argument("--task-config", default="demo_randomized", help="task_config/<name>.yml")
-    parser.add_argument("--embodiment-tag", default="NEW_EMBODIMENT")
+    parser.add_argument(
+        "--embodiment-tag",
+        default="new_embodiment",
+        help=(
+            "Must match a gr00t.data.embodiment_tags.EmbodimentTag *value* exactly "
+            "(lowercase: gr1/oxe_droid/agibot_genie1/new_embodiment on this branch of "
+            "Isaac-GR00T) -- it's looked up by value, not by enum member name."
+        ),
+    )
+    parser.add_argument(
+        "--data-config",
+        default="equi_robotwin_2hand_quat",
+        help="Name passed to gr00t.experiment.data_config.load_data_config(); must match how the checkpoint was trained",
+    )
+    parser.add_argument("--denoising-steps", type=int, default=None, help="Override the checkpoint's default flow-matching denoising steps")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument(
         "--n-action-steps",
@@ -164,7 +184,7 @@ def run_trial(
     while task_env.take_action_cnt < task_env.step_lim:
         obs = task_env.get_obs()
         gr00t_obs = adapter.build_observation(obs, instruction)
-        action, _ = adapter.policy.get_action(gr00t_obs)
+        action = adapter.policy.get_action(gr00t_obs)  # gr00t.model.policy: single dict, not a (action, info) tuple
         waypoints = adapter.decode_action_chunk(action)
 
         for waypoint in waypoints[:n_action_steps]:
@@ -222,7 +242,9 @@ def main():
     adapter = GR00TRoboTwinEndposeAdapter(
         model_path=cli.model_path,
         embodiment_tag=cli.embodiment_tag,
+        data_config=cli.data_config,
         device=cli.device,
+        denoising_steps=cli.denoising_steps,
     )
 
     trials = []
