@@ -30,12 +30,60 @@ that already has gr00t (editable) + its dependencies installed:
         --gr00t-path /home/user/miniconda3/envs/ego_gr00t/lib/python3.10/site-packages
 """
 
+import os
+import sys
+
+
+def _reexec_with_libxcb_preload() -> None:
+    """Some gr00t-env package pulled in transitively while constructing Gr00tPolicy
+    (video loading in the checkpoint's data-transform pipeline -- decord/av/opencv
+    wheels all vendor this way) ships an auditwheel-vendored copy of libxcb whose
+    embedded DT_SONAME is still the plain "libxcb.so.1", not its hash-suffixed
+    filename on disk. Once dlopen'd, the dynamic linker treats "libxcb.so.1" as
+    already satisfied process-wide, so any *later* dependency resolution of that
+    soname -- e.g. Mesa's llvmpipe Vulkan ICD resolving libxcb when SAPIEN/GLFW probes
+    X11 window-surface support while constructing the *second* SapienRenderer of the
+    run (the task_env's own, in run_trial -> setup_demo -> setup_scene; the first, in
+    test_render.Sapien_TEST(), runs before gr00t is ever imported and is unaffected)
+    -- silently gets the vendored copy instead of the real one, and segfaults deep in
+    that .so with no Python-catchable exception the moment SAPIEN makes its first xcb
+    call. Diagnosed via `gdb -batch -ex run -ex bt` around a real
+    `Segmentation fault (core dumped)` that happened right after checkpoint loading,
+    every time, 100% reproducible.
+
+    Preloading the system libxcb fixes it, but ONLY via LD_PRELOAD specifically --
+    glibc's ld.so consults LD_PRELOAD at process *exec* time, before the interpreter
+    or any extension module has loaded anything, giving it priority in the soname
+    race; a plain ctypes.CDLL(..., mode=RTLD_GLOBAL) issued after the process is
+    already running does not (verified empirically: it still segfaults). Since we're
+    already inside the process by the time this runs, the only way to actually get
+    LD_PRELOAD applied is to re-exec ourselves once with it set -- which is exactly
+    what this does, guarded by an env var so it only happens once.
+    """
+    if not sys.platform.startswith("linux") or os.environ.get("_ROBOTWIN_LIBXCB_PRELOADED"):
+        return
+    candidates = ("/usr/lib/x86_64-linux-gnu/libxcb.so.1", "/usr/lib64/libxcb.so.1", "/usr/lib/libxcb.so.1")
+    libxcb = next((p for p in candidates if os.path.exists(p)), None)
+    if libxcb is None:
+        return  # no known system libxcb found; run un-preloaded and hope for the best
+    env = dict(os.environ)
+    existing = env.get("LD_PRELOAD", "")
+    env["LD_PRELOAD"] = f"{libxcb}:{existing}" if existing else libxcb
+    env["_ROBOTWIN_LIBXCB_PRELOADED"] = "1"
+    print(f"eval_gr00t_endpose: re-exec'ing with LD_PRELOAD={libxcb} "
+          "(works around a gr00t-env package's vendored libxcb crashing SAPIEN's "
+          "renderer init -- see _reexec_with_libxcb_preload's docstring)")
+    sys.stdout.flush()  # execve() replaces the process image without flushing buffered stdout
+    sys.stderr.flush()
+    os.execve(sys.executable, [sys.executable] + sys.argv, env)
+
+
+_reexec_with_libxcb_preload()
+
 import argparse
 import json
-import os
 import site
 import subprocess
-import sys
 from datetime import datetime
 from pathlib import Path
 

@@ -66,6 +66,36 @@ import numpy as np
 # (i.e. the gr00t env, if --gr00t-path/prioritize_sitedir already ran).
 _ENV_SENSITIVE_MODULE_PREFIXES = ("pydantic", "pydantic_core", "numpydantic", "annotated_types")
 
+# A gr00t-env package pulled in transitively during Gr00tPolicy construction (video
+# loading in the data-transform pipeline; not decord specifically in every checkpoint/
+# data-config combination -- av/opencv wheels vendor the same way) ships an
+# auditwheel-vendored copy of libxcb whose embedded DT_SONAME is still the plain
+# "libxcb.so.1", not its hash-suffixed filename on disk. Once that copy gets dlopen'd
+# (anywhere in gr00t's import chain), the dynamic linker treats "libxcb.so.1" as already
+# satisfied process-wide: any *later* dependency resolution of that soname -- e.g. Mesa's
+# llvmpipe Vulkan ICD resolving libxcb when SAPIEN/GLFW probes X11 window-surface support
+# while constructing a *second* SapienRenderer (the first, in test_render.Sapien_TEST(),
+# runs before gr00t is ever imported and is unaffected) -- silently gets the vendored
+# copy instead of the real one. That copy's xcb_connection_t state isn't what GLFW set
+# up, and the very next xcb call (xcb_query_tree, inside
+# svulkan2::core::Instance::summarizePhysicalDevices) segfaults deep in that vendored
+# .so with no Python-catchable exception -- diagnosed via `gdb -batch -ex run -ex bt`
+# around a real crash (`Segmentation fault (core dumped)` right after checkpoint
+# loading).
+#
+# IMPORTANT: dlopen()'ing the system libxcb from *here* (mid-process, via ctypes,
+# even with RTLD_GLOBAL) does NOT reliably fix this -- verified empirically, it still
+# segfaults. LD_PRELOAD only wins the soname race because glibc's ld.so consults it at
+# process *exec* time, before the interpreter or any extension module has loaded
+# anything; a dlopen() issued after the process is already running doesn't get that
+# same precedence for other libraries' independent dependency resolution. The actual
+# fix has to happen before the process starts, which is what
+# script/eval_gr00t_endpose.py's _reexec_with_libxcb_preload() does (re-execs the
+# process once with LD_PRELOAD set) -- see that function for the real fix. Anything
+# constructing this adapter *without* going through that script's re-exec (e.g. a
+# notebook, a different entrypoint) needs the equivalent: run under
+# `LD_PRELOAD=$(ldconfig -p | grep -m1 'libxcb.so.1 ' | awk '{print $NF}')` yourself.
+
 
 def _purge_env_sensitive_modules() -> None:
     stale = [name for name in sys.modules if name.split(".", 1)[0] in _ENV_SENSITIVE_MODULE_PREFIXES]
