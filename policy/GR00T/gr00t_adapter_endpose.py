@@ -259,6 +259,21 @@ class GR00TRoboTwinEndposeAdapter:
 
         for key, camera in self.video_camera_map.items():
             rgb = np.asarray(obs["observation"][camera]["rgb"], dtype=np.uint8)
+            # envs/camera/camera.py:get_rgb() returns the camera's true RGB channel order.
+            # script/lerobot/convert_robotwin_to_lerobot.py's decode_jpeg_stream, however,
+            # JPEG-decodes the HDF5 bytes (which envs/utils/pkl2hdf5.py wrote via
+            # cv2.imencode() straight off that same true-RGB array, with no RGB->BGR
+            # conversion first) and then applies cv2.cvtColor(..., COLOR_BGR2RGB) on top --
+            # since cv2.imencode/imdecode round-trip the raw channel order unchanged (they're
+            # a self-consistent pair regardless of which channel semantics you feed them),
+            # that extra BGR2RGB call actually swaps the true R and B channels rather than
+            # correcting them. So every LeRobot dataset (and any checkpoint trained on one)
+            # produced by that converter has red and blue swapped relative to the real scene.
+            # Reproduce the same swap here so this adapter feeds the policy images in the
+            # same (accidentally-inverted) color convention it was trained on -- matching
+            # convert_robotwin_to_lerobot.py's train-time transform matters more for eval
+            # accuracy than "true" color correctness.
+            rgb = np.ascontiguousarray(rgb[:, :, ::-1])  # copy: negative-stride view isn't torch.from_numpy-safe
             observation[key] = rgb[None, :, :, :]  # (T=1, H, W, 3), no crop/resize
 
         observation[self.language_key] = [instruction]  # (T=1,)
