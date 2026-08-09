@@ -81,10 +81,14 @@ class put_object_cabinet(Base_Task):
         self.add_prohibit_area(self.cabinet, padding=0.01)
         self.prohibited_area.append([-0.15, -0.3, 0.15, 0.3])
 
-    def play_once(self):
-        arm_tag = ArmTag("right" if self.object.get_pose().p[0] > 0 else "left")
-        self.arm_tag = arm_tag
+        # Set here (not in play_once, which only runs during scripted-demo generation) so
+        # check_success can read self.arm_tag/self.origin_z during policy eval too, where
+        # play_once never runs.
+        self.arm_tag = ArmTag("right" if self.object.get_pose().p[0] > 0 else "left")
         self.origin_z = self.object.get_pose().p[2]
+
+    def play_once(self):
+        arm_tag = self.arm_tag
 
         # Grasp the object and grasp the drawer bar
         self.move(self.grasp_actor(self.object, arm_tag=arm_tag, pre_grasp_dis=0.1))

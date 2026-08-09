@@ -97,10 +97,12 @@ class place_object_scale(Base_Task):
         self.add_prohibit_area(self.object, padding=0.05)
         self.add_prohibit_area(self.scale, padding=0.05)
 
-    def play_once(self):
+        # Set here (not in play_once, which only runs during scripted-demo generation) so
+        # check_success can read self.arm_tag during policy eval too, where play_once never runs.
         # Determine which arm to use based on object's x position (right if positive, left if negative)
         self.arm_tag = ArmTag("right" if self.object.get_pose().p[0] > 0 else "left")
 
+    def play_once(self):
         # Grasp the object with the selected arm
         self.move(self.grasp_actor(self.object, arm_tag=self.arm_tag))
 
