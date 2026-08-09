@@ -72,7 +72,7 @@ run_task() {
     def=$(task_def "$key")
     IFS='|' read -r task task_config instruction out_suffix <<< "$def"
     cd /home/lmaotan/workspace/Isaac-GR00T 
-    git checkout equi_gr00t_FA_equillm
+    git checkout gr00t_baseline_locht1
     cd /home/lmaotan/Documents/locht1/RoboTwin
     python script/eval_gr00t_endpose.py \
         --model-path /home/locht1/vr_checkpoint/$MODEL \
