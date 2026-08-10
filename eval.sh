@@ -24,11 +24,13 @@ TASK_DEFS=(
 )
 
 usage() {
-    echo "Usage: $0 <MODEL> [TASK1,TASK2,...|all] [CUDA_ID]"
+    echo "Usage: $0 <MODEL> [TASK1,TASK2,...|all] [CUDA_ID] [EXEC] [DENOISING_STEPS]"
     echo ""
-    echo "  MODEL    checkpoint dir name under /home/locht1/vr_checkpoint/ (required)"
-    echo "  TASK     comma-separated list from: ${TASK_KEYS[*]}, or 'all' (default: all)"
-    echo "  CUDA_ID  CUDA device index (default: 0)"
+    echo "  MODEL             checkpoint dir name under /home/locht1/vr_checkpoint/ (required)"
+    echo "  TASK              comma-separated list from: ${TASK_KEYS[*]}, or 'all' (default: all)"
+    echo "  CUDA_ID           CUDA device index (default: 0)"
+    echo "  EXEC              n-action-steps (default: 4)"
+    echo "  DENOISING_STEPS   override the checkpoint's default flow-matching denoising steps (default: unset, use checkpoint default)"
     exit 1
 }
 
@@ -51,6 +53,7 @@ MODEL=$1
 TASK_ARG=${2:-all}
 CUDA_ID=${3:-0}
 EXEC=${4:-4}
+DENOISING_STEPS=${5:-}
 
 if [ "$TASK_ARG" = "all" ]; then
     TASK_LIST=("${TASK_KEYS[@]}")
@@ -71,18 +74,27 @@ run_task() {
     local def
     def=$(task_def "$key")
     IFS='|' read -r task task_config instruction out_suffix <<< "$def"
-    cd /home/lmaotan/workspace/Isaac-GR00T 
+    cd /home/lmaotan/workspace/Isaac-GR00T
     git checkout equi_gr00t_FA_equillm
     cd /home/lmaotan/Documents/locht1/RoboTwin
+
+    local denoise_args=()
+    local out_suffix_full=$out_suffix
+    if [ -n "$DENOISING_STEPS" ]; then
+        denoise_args=(--denoising-steps "$DENOISING_STEPS")
+        out_suffix_full="${out_suffix}_denoise${DENOISING_STEPS}"
+    fi
+
     python script/eval_gr00t_endpose.py \
-        --model-path /home/locht1/vr_checkpoint/$MODEL \
+        --model-path /home/lmaotan/vr_checkpoints/$MODEL \
         --task "$task" \
         --task-config "$task_config" \
         --instruction "$instruction" \
         --num-trials 50 \
-        --seed 0 \
-        --n-action-steps $EXEC --output-dir ~/eval_robotwin/${MODEL}_exec${EXEC}/$out_suffix \
-        --device cuda:0 --gr00t-path /home/locht1/miniconda3/envs/gr00t/lib/python3.10/site-packages
+        --seed 7 \
+        --n-action-steps $EXEC --output-dir ~/eval_robotwin/${MODEL}_exec${EXEC}/$out_suffix_full \
+        --device cuda:0 --gr00t-path /home/lmaotan/miniconda3/envs/gr00t/lib/python3.10/site-packages \
+        ${denoise_args[@]+"${denoise_args[@]}"}
 }
 
 for key in "${TASK_LIST[@]}"; do
