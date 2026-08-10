@@ -91,7 +91,7 @@ run_task() {
         --task-config "$task_config" \
         --instruction "$instruction" \
         --num-trials 50 \
-        --seed 0 \
+        --seed 7 \
         --n-action-steps $EXEC --output-dir ~/eval_robotwin/${MODEL}_exec${EXEC}/$out_suffix_full \
         --device cuda:0 --gr00t-path /home/lmaotan/miniconda3/envs/gr00t/lib/python3.10/site-packages \
         ${denoise_args[@]+"${denoise_args[@]}"}
