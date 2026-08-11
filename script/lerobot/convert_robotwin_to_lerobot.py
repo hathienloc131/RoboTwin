@@ -25,6 +25,19 @@ Cameras: only head_camera, left_camera, right_camera are kept (front_camera is
 dropped, matching what every existing RoboTwin policy converter uses
 downstream). Images are stored in LeRobot "video" mode (mp4-encoded).
 
+--head-camera-source lets the "head_camera" output feature be populated from
+RoboTwin's third-person "observer" camera instead of the real head camera --
+recorded as a top-level `third_view_rgb` HDF5 dataset (see
+envs/_base_task.py:get_obs, gated by task_config's data_type.third_view: true;
+data/third_view/<task>/demo_clean/ is collected this way) rather than nested
+under observation/head_camera/rgb like every other camera. The output feature
+is still named "observation.images.head_camera" either way -- only the pixel
+source changes -- so a checkpoint/data-config built around the original
+head_camera schema needs no changes to train or eval on a third-view dataset;
+pair with GR00TRoboTwinEndposeAdapter(third_view=True) (policy/GR00T/
+gr00t_adapter_endpose.py) / script/eval_gr00t_endpose_thirdview.py so eval-time
+observations are built from the same third_view_rgb source.
+
 By default, each episode's language instruction is randomly sampled from its
 own instructions/episode<N>.json (per --instruction-set). Pass --instruction
 "..." to use one fixed instruction string for every episode/frame instead.
@@ -67,6 +80,16 @@ FOLDER_NAME_RE = re.compile(r"^(.+)_([A-Za-z0-9\-]+)_([A-Za-z0-9]+)_(\d+)$")
 EPISODE_INDEX_RE = re.compile(r"episode(\d+)\.hdf5$")
 
 
+def camera_h5_path(camera: str, head_camera_source: str) -> str:
+    """HDF5 path to a camera's (T,) JPEG-byte-string dataset within an episode file.
+    Every camera except a head_camera_source="third_view" head_camera lives at
+    observation/<camera>/rgb; that one case reads the top-level third_view_rgb
+    dataset instead (see module docstring)."""
+    if camera == "head_camera" and head_camera_source == "third_view":
+        return "third_view_rgb"
+    return f"observation/{camera}/rgb"
+
+
 def decode_jpeg_stream(raw: np.ndarray, ep_path: Path, camera: str) -> np.ndarray:
     """Decode a RoboTwin rgb dataset: (T,) NUL-padded JPEG byte strings -> (T,H,W,3) uint8 RGB."""
     frames = []
@@ -79,7 +102,7 @@ def decode_jpeg_stream(raw: np.ndarray, ep_path: Path, camera: str) -> np.ndarra
     return np.stack(frames, axis=0)
 
 
-def load_raw_episode(ep_path: Path, cameras: tuple = DEFAULT_CAMERAS, layout: str = "hwc"):
+def load_raw_episode(ep_path: Path, cameras: tuple = DEFAULT_CAMERAS, layout: str = "hwc", head_camera_source: str = "head"):
     """
     Read one RoboTwin episode{N}.hdf5 and return (frames, image_shape) where:
       - frames is a list[dict] of length T-1, one dict per LeRobot frame, keyed
@@ -106,7 +129,7 @@ def load_raw_episode(ep_path: Path, cameras: tuple = DEFAULT_CAMERAS, layout: st
         imgs = {}
         image_shape = None
         for cam in cameras:
-            raw = ep[f"observation/{cam}/rgb"][()]
+            raw = ep[camera_h5_path(cam, head_camera_source)][()]
             if raw.shape[0] != num_raw_frames:
                 raise ValueError(f"{ep_path}: camera '{cam}' has {raw.shape[0]} frames, expected {num_raw_frames}")
             decoded = decode_jpeg_stream(raw, ep_path, cam)
@@ -240,6 +263,7 @@ def convert_task_folder(
     overwrite=False,
     push_to_hub=False,
     repo_root=None,
+    head_camera_source="head",
 ):
     lb = import_lerobot()
     layout = image_layout if image_layout != "auto" else lb.default_image_layout
@@ -268,12 +292,15 @@ def convert_task_folder(
 
     # Probe the first episode to determine image shape and build the features dict.
     first_idx, first_path = episodes[0]
-    probe_frames, image_shape = load_raw_episode(first_path, cameras, layout)
+    probe_frames, image_shape = load_raw_episode(first_path, cameras, layout, head_camera_source)
     if probe_frames is None:
         raise RuntimeError(f"First episode {first_path} has too few frames to probe image shape from")
 
     features = build_features(image_shape, cameras, layout)
-    logger.info(f"Using image layout={layout}, image_shape(H,W,C)={image_shape}, fps={fps}, robot_type={robot_type}")
+    logger.info(
+        f"Using image layout={layout}, image_shape(H,W,C)={image_shape}, fps={fps}, robot_type={robot_type}, "
+        f"head_camera_source={head_camera_source}"
+    )
 
     dataset = lb.LeRobotDataset.create(
         repo_id=repo_id,
@@ -289,7 +316,7 @@ def convert_task_folder(
         if ep_idx == first_idx:
             frames, ep_image_shape = probe_frames, image_shape
         else:
-            frames, ep_image_shape = load_raw_episode(ep_path, cameras, layout)
+            frames, ep_image_shape = load_raw_episode(ep_path, cameras, layout, head_camera_source)
         if frames is None:
             continue
         if ep_image_shape != image_shape:
@@ -337,6 +364,15 @@ def main():
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--push-to-hub", action="store_true")
     parser.add_argument("--repo-root", type=Path, default=None, help="RoboTwin repo root, for fps auto-lookup (default: two parents up from this script)")
+    parser.add_argument(
+        "--head-camera-source",
+        type=str,
+        choices=["head", "third_view"],
+        default="head",
+        help="'third_view' populates the 'head_camera' feature from the top-level third_view_rgb HDF5 "
+        "dataset (RoboTwin's third-person observer camera, task_config data_type.third_view: true) "
+        "instead of observation/head_camera/rgb -- see module docstring.",
+    )
     args = parser.parse_args()
 
     convert_task_folder(
@@ -354,6 +390,7 @@ def main():
         overwrite=args.overwrite,
         push_to_hub=args.push_to_hub,
         repo_root=args.repo_root,
+        head_camera_source=args.head_camera_source,
     )
 
 

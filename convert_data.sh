@@ -22,3 +22,20 @@ python script/lerobot/convert_robotwin_to_lerobot.py \
     --src-path data/move_stapler_pub_aloha-agilex_clean_50 \
     --output-path data/converted/move_stapler_pub \
     --instruction "Use the appropriate arm to move the stapler onto the colored mat."
+
+python script/lerobot/convert_robotwin_to_lerobot.py \
+    --src-path data/open_laptop_aloha-agilex_clean_50 \
+    --output-path data/converted/open_laptop \
+    --instruction "Use the appropriate arm to open the laptop."
+
+python script/lerobot/convert_robotwin_to_lerobot.py \
+    --src-path data/place_mouse_pad_aloha-agilex_clean_50 \
+    --output-path data/converted/place_mouse_pad \
+    --instruction "Pick up the mouse and place it on the colored mat using the appropriate arm."
+
+python script/lerobot/convert_robotwin_to_lerobot.py \
+    --src-path data/place_object_basket_aloha-agilex_clean_50 \
+    --output-path data/converted/place_object_basket \
+    --instruction "Use one arm to place the object into the basket, then use the other arm to grab the basket and move it slightly away."
+
+

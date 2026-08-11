@@ -180,6 +180,16 @@ class GR00TRoboTwinEndposeAdapter:
     native world-frame endpose directly -- no camera-frame reprojection, no rot6d.
     Supports 1-3 video keys (mapped to head_camera/left_camera/right_camera) and
     tolerates minor key-naming variation (l_/left_ etc.) in the data config.
+
+    third_view=True makes the video key(s) mapped to "head_camera" read from
+    obs["third_view_rgb"] (RoboTwin's third-person observer camera; a top-level
+    key in TASK_ENV.get_obs()'s dict, populated only when the running task_config
+    sets data_type.third_view: true) instead of
+    obs["observation"]["head_camera"]["rgb"]. Pair with a checkpoint trained on a
+    dataset built via script/lerobot/convert_robotwin_to_lerobot.py
+    --head-camera-source third_view, which stores that same third_view_rgb
+    content under the unchanged "observation.images.head_camera" feature -- so
+    the data config / video-key names here don't change, only the pixel source.
     """
 
     def __init__(
@@ -189,6 +199,7 @@ class GR00TRoboTwinEndposeAdapter:
         data_config: str = "equi_robotwin_2hand_quat",
         device: str = "cuda:0",
         denoising_steps: int = None,
+        third_view: bool = False,
     ):
         _purge_env_sensitive_modules()
         from gr00t.experiment.data_config import load_data_config
@@ -237,6 +248,7 @@ class GR00TRoboTwinEndposeAdapter:
 
         # Inverse of action_key_info, built once since decode_action_chunk runs in the hot trial loop.
         self._action_lookup = {pair: key for key, pair in self.action_key_info.items()}
+        self.third_view = third_view
 
     def reset(self) -> None:
         """Clears Gr00tPolicy's internal temporal-ensembling buffers between episodes.
@@ -258,8 +270,15 @@ class GR00TRoboTwinEndposeAdapter:
             observation[key] = value[None, :].astype(np.float32)  # (T=1, D)
 
         for key, camera in self.video_camera_map.items():
-            rgb = np.asarray(obs["observation"][camera]["rgb"], dtype=np.uint8)
-            # envs/camera/camera.py:get_rgb() returns the camera's true RGB channel order.
+            if self.third_view and camera == "head_camera":
+                # obs["third_view_rgb"] is a top-level (H, W, 3) array (envs/_base_task.py:get_obs),
+                # not nested under obs["observation"][...]["rgb"] like every other camera.
+                rgb = np.asarray(obs["third_view_rgb"], dtype=np.uint8)
+            else:
+                rgb = np.asarray(obs["observation"][camera]["rgb"], dtype=np.uint8)
+            # envs/camera/camera.py:get_rgb()/get_observer_rgb() both return the camera's true
+            # RGB channel order (get_observer_rgb() feeds pkl2hdf5's same "rgb" in key -> cv2.imencode
+            # JPEG path as every other camera, so the same swap below applies to third_view_rgb too).
             # script/lerobot/convert_robotwin_to_lerobot.py's decode_jpeg_stream, however,
             # JPEG-decodes the HDF5 bytes (which envs/utils/pkl2hdf5.py wrote via
             # cv2.imencode() straight off that same true-RGB array, with no RGB->BGR
