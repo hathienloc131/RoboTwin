@@ -82,6 +82,10 @@ class Base_Task(gym.Env):
         self.crazy_random_light_rate = random_setting.get("crazy_random_light_rate", 0)
         self.crazy_random_light = (0 if not self.random_light else np.random.rand() < self.crazy_random_light_rate)
         self.random_embodiment = random_setting.get("random_embodiment", False)  # TODO
+        # Optional fixed override, e.g. "seen/16" -> ./assets/background_texture/seen/16.png.
+        # Bypasses random_background entirely (including the eval-mode seen/unseen split
+        # and clean_background_rate), so both wall and table always use this exact texture.
+        self.fixed_background_texture = random_setting.get("fixed_background_texture", None)
 
         self.file_path = []
         self.plan_success = True
@@ -273,7 +277,9 @@ class Base_Task(gym.Env):
         wall_texture, table_texture = None, None
         table_height += self.table_z_bias
 
-        if self.random_background:
+        if self.fixed_background_texture:
+            self.wall_texture, self.table_texture = (self.fixed_background_texture, self.fixed_background_texture)
+        elif self.random_background:
             texture_type = "seen" if not self.eval_mode else "unseen"
             directory_path = f"./assets/background_texture/{texture_type}"
             file_count = len(
