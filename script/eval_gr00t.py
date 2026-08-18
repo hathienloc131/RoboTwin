@@ -32,6 +32,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent / "policy" / "GR00T")
 
 import yaml  # noqa: E402
 from envs import CONFIGS_PATH  # noqa: E402
+from envs.utils.create_actor import UnStableError  # noqa: E402
 from eval_policy import class_decorator, get_camera_config, get_embodiment_config  # noqa: E402
 from gr00t_adapter import GR00TRoboTwinAdapter  # noqa: E402
 
@@ -42,7 +43,14 @@ def parse_args():
     parser.add_argument("--task", required=True, help="RoboTwin task/module name, e.g. stack_bowls_three")
     parser.add_argument("--instruction", required=True, help="Fixed language instruction for every trial")
     parser.add_argument("--num-trials", type=int, required=True)
-    parser.add_argument("--seed", type=int, required=True, help="Base seed; trial i uses seed + i")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        required=True,
+        help=("Base seed; trial i starts at seed + i, but seeds RoboTwin flags as physically "
+              "unstable (UnStableError) are skipped and the next seed is tried without consuming "
+              "a trial slot, so the exact seed used per trial can drift upward."),
+    )
     parser.add_argument("--task-config", default="demo_randomized", help="task_config/<name>.yml")
     parser.add_argument("--embodiment-tag", default="NEW_EMBODIMENT")
     parser.add_argument("--device", default="cuda:0")
@@ -219,8 +227,9 @@ def main():
     )
 
     trials = []
-    for i in range(cli.num_trials):
-        seed_i = cli.seed + i
+    seed_i = cli.seed
+    i = 0
+    while i < cli.num_trials:
         try:
             success = run_trial(
                 task_env,
@@ -233,6 +242,13 @@ def main():
                 cli.camera_name,
                 video_size,
             )
+        except UnStableError as e:
+            # Matches eval_policy.py: an unstable seed is a simulation-setup artifact, not a
+            # policy failure, so it doesn't consume a trial slot -- just try the next seed.
+            print(f"\033[93mSeed {seed_i} unstable, skipping (trial {i} retries at seed {seed_i + 1}): {e}\033[0m")
+            task_env.close_env()
+            seed_i += 1
+            continue
         except Exception as e:
             print(f"\033[91mTrial {i} (seed {seed_i}) raised {type(e).__name__}: {e}\033[0m")
             task_env.close_env()
@@ -241,6 +257,8 @@ def main():
         trials.append({"trial": i, "seed": seed_i, "success": success})
         status = "\033[92mSuccess\033[0m" if success else "\033[91mFail\033[0m"
         print(f"Trial {i + 1}/{cli.num_trials} (seed {seed_i}): {status}")
+        i += 1
+        seed_i += 1
 
     successes = sum(t["success"] for t in trials)
     success_rate = successes / cli.num_trials
