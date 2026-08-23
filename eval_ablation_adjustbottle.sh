@@ -6,11 +6,11 @@ set -euo pipefail
 # (~half the checkpoints sequentially on each GPU). Each GPU's output goes to
 # its own log file since both run at once.
 MODELS=(
-    gr00t_n17_ot_ablation_adjustbottle_a_robot_only_25k_adjust_bottle_bs64
-    gr00t_n17_ot_ablation_adjustbottle_b_cotrain_no_ot_25k_adjust_bottle_bs64
-    gr00t_n17_ot_ablation_adjustbottle_c_cotrain_motion_head_only_25k_adjust_bottle_bs64
-    gr00t_n17_ot_ablation_adjustbottle_d_cotrain_ot_25k_adjust_bottle_bs64
-    gr00t_n17_ot_ablation_adjustbottle_e_cotrain_motion_head_ot_25k_adjust_bottle_bs64
+    #gr00t_n17_ot_ablation_adjustbottle_a_robot_only_ep25_adjust_bottle_bs64
+    gr00t_n17_ot_ablation_adjustbottle_b_propmix_ep25_adjust_bottle_bs64
+    gr00t_n17_ot_ablation_adjustbottle_c_propmix_ep25_adjust_bottle_bs64
+    #gr00t_n17_ot_ablation_adjustbottle_d_propmix_debias_ep25_adjust_bottle_bs64
+    gr00t_n17_ot_ablation_adjustbottle_e_propmix_debias_ep25_adjust_bottle_bs64
 )
 
 LOG_DIR=~/eval_robotwin/ablation_logs
@@ -39,7 +39,7 @@ fi
 
 GPU0=${1:-0}
 GPU1=${2:-$((GPU0 + 1))}
-EXEC=${3:-4}
+EXEC=${3:-8}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$LOG_DIR"

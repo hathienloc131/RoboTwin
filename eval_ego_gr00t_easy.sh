@@ -7,13 +7,13 @@ set -euo pipefail
 TASK_KEYS=(
     adjust_bottle
 )
-TASK_DEFS=(
-    "adjust_bottle|demo_randomized|Use the correct arm to pick up the plastic drink bottle.|adjust_bottle_hard_4" 
-)
-
 #TASK_DEFS=(
-#    "adjust_bottle|demo_clean_bg16|Use the correct arm to pick up the plastic drink bottle.|adjust_bottle_4"
+#    "adjust_bottle|demo_randomized|Use the correct arm to pick up the plastic drink bottle.|adjust_bottle_hard_4" 
 #)
+
+TASK_DEFS=(
+    "adjust_bottle|demo_clean_bg16|Use the correct arm to pick up the plastic drink bottle.|adjust_bottle_4"
+)
 
 usage() {
     echo "Usage: $0 <MODEL> [TASK1,TASK2,...|all] [CUDA_ID] [EXEC]"
