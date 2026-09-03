@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Roots, overridable per machine. These were hardcoded to one user's home, then
+# to another's — parameterising them means the two of us can run the same script
+# without editing it. Defaults are this box's paths, so nothing changes here.
+CKPT_ROOT="${CKPT_ROOT:-/mnt/data/sftp/data/vla/vr_checkpoints}"
+EVAL_ROOT="${EVAL_ROOT:-/mnt/data/sftp/data/locht1/eval_robotwin}"
+GR00T_SP="${GR00T_SP:-/mnt/data/sftp/data/locht1/miniconda/envs/ego_gr00t/lib/python3.10/site-packages}"
+
 # task_key -> "task|task-config|instruction|output-dir-suffix"
 # Parallel arrays instead of `declare -A` for portability (bash 3.2, e.g. macOS
 # stock bash, has no associative arrays).
@@ -74,14 +81,14 @@ run_task() {
     IFS='|' read -r task task_config instruction out_suffix <<< "$def"
 
     python script/eval_gr00t.py \
-        --model-path /mnt/data/sftp/data/vla/vr_checkpoints/$MODEL \
+        --model-path "$CKPT_ROOT/$MODEL" \
         --task "$task" \
         --task-config "$task_config" \
         --instruction "$instruction" \
         --num-trials 100 \
         --seed 0 \
-        --n-action-steps $EXEC --output-dir /mnt/data/sftp/data/locht1/eval_robotwin/${MODEL}_exec${EXEC}/$out_suffix \
-        --device cuda:0 --gr00t-path /mnt/data/sftp/data/locht1/miniconda/envs/ego_gr00t/lib/python3.10/site-packages
+        --n-action-steps $EXEC --output-dir "$EVAL_ROOT/${MODEL}_exec${EXEC}/$out_suffix" \
+        --device cuda:0 --gr00t-path "$GR00T_SP"
 }
 
 for key in "${TASK_LIST[@]}"; do
