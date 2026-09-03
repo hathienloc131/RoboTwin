@@ -63,6 +63,15 @@ def parse_args():
     parser.add_argument("--camera-name", default="head_camera")
     parser.add_argument("--output-dir", default=None, help="Defaults to eval_result/<task>/GR00T/<task_config>/<timestamp>")
     parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help=(
+            "Ignore any existing results.json in --output-dir and start over from trial 0, "
+            "instead of resuming from where a prior (e.g. crashed) run of the same "
+            "model/task/task-config/instruction/seed/num-trials left off (the default)."
+        ),
+    )
+    parser.add_argument(
         "--gr00t-path",
         default=os.environ.get("GR00T_REPO_PATH"),
         help=(
@@ -126,6 +135,57 @@ def prioritize_sitedir(path: str) -> None:
     new_entries = [p for p in sys.path if p not in before]
     remaining = [p for p in sys.path if p not in new_entries]
     sys.path[:] = new_entries + remaining
+
+
+def load_resumable_trials(results_path: Path, cli) -> list:
+    """Loads a prior run's completed trials from results_path, so a rerun after a crash (or
+    of an already-finished task) continues instead of redoing trials. Returns [] -- start
+    fresh -- if the file is missing, unreadable, or was a run of different arguments (a stale
+    results.json from a differently-configured run under the same --output-dir shouldn't be
+    silently spliced onto this one)."""
+    if not results_path.exists():
+        return []
+    try:
+        with open(results_path) as f:
+            prev = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"\033[93mCould not read existing {results_path} ({e}); starting fresh.\033[0m")
+        return []
+
+    same_config = (
+        prev.get("task") == cli.task
+        and prev.get("task_config") == cli.task_config
+        and prev.get("model_path") == cli.model_path
+        and prev.get("instruction") == cli.instruction
+        and prev.get("seed") == cli.seed
+        and prev.get("num_trials") == cli.num_trials
+    )
+    if not same_config:
+        print(f"\033[93mExisting {results_path} was run with different arguments; ignoring "
+              f"(use a fresh --output-dir, or --fresh to overwrite in place).\033[0m")
+        return []
+    return prev.get("trials", [])[: cli.num_trials]
+
+
+def write_results(cli, results_path: Path, trials: list) -> tuple[dict, int, float]:
+    """Writes (or overwrites) results_path with `trials` so far. Called after every trial --
+    not just at the end -- so a crash mid-task leaves a checkpoint the next run can resume
+    from via load_resumable_trials, rather than losing all progress on the task."""
+    successes = sum(t["success"] for t in trials)
+    success_rate = successes / cli.num_trials if cli.num_trials else 0.0
+    results = {
+        "task": cli.task,
+        "task_config": cli.task_config,
+        "model_path": cli.model_path,
+        "instruction": cli.instruction,
+        "num_trials": cli.num_trials,
+        "seed": cli.seed,
+        "success_rate": success_rate,
+        "trials": trials,
+    }
+    with open(results_path, "w") as f:
+        json.dump(results, f, indent=2)
+    return results, successes, success_rate
 
 
 def start_video_writer(task_env, episode_idx: int, video_size: str) -> None:
@@ -203,9 +263,25 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     args["eval_video_save_dir"] = output_dir
 
+    results_path = output_dir / "results.json"
+    completed_trials = [] if cli.fresh else load_resumable_trials(results_path, cli)
+
+    if len(completed_trials) >= cli.num_trials:
+        # Already finished in a prior run -- skip loading the sim/model entirely, that's the
+        # whole point of resuming: rerunning the same command over a task list should be
+        # nearly free for tasks that already completed.
+        _, successes, success_rate = write_results(cli, results_path, completed_trials)
+        print(f"\033[92mAll {cli.num_trials} trials already completed in {results_path}; nothing to do "
+              f"(pass --fresh to rerun from scratch).\033[0m")
+        print(f"\nSuccess rate: {successes}/{cli.num_trials} => {success_rate * 100:.1f}%")
+        return
+
     print(f"\033[34mTask Name: {cli.task}\033[0m")
     print(f"\033[34mModel Path: {cli.model_path}\033[0m")
     print(f"\033[34mInstruction: {cli.instruction}\033[0m")
+    if completed_trials:
+        print(f"\033[36mResuming from {results_path}: {len(completed_trials)}/{cli.num_trials} "
+              f"trials already done.\033[0m")
 
     task_env = class_decorator(cli.task)
 
@@ -226,9 +302,9 @@ def main():
         camera_name=cli.camera_name,
     )
 
-    trials = []
-    seed_i = cli.seed
-    i = 0
+    trials = list(completed_trials)
+    i = len(trials)
+    seed_i = trials[-1]["seed"] + 1 if trials else cli.seed
     while i < cli.num_trials:
         try:
             success = run_trial(
@@ -257,25 +333,13 @@ def main():
         trials.append({"trial": i, "seed": seed_i, "success": success})
         status = "\033[92mSuccess\033[0m" if success else "\033[91mFail\033[0m"
         print(f"Trial {i + 1}/{cli.num_trials} (seed {seed_i}): {status}")
+        # Checkpoint after every trial (not just at the end) so a crash mid-task -- OOM,
+        # sim hang, killed process -- loses at most the in-flight trial, not the whole task.
+        write_results(cli, results_path, trials)
         i += 1
         seed_i += 1
 
-    successes = sum(t["success"] for t in trials)
-    success_rate = successes / cli.num_trials
-    results = {
-        "task": cli.task,
-        "task_config": cli.task_config,
-        "model_path": cli.model_path,
-        "instruction": cli.instruction,
-        "num_trials": cli.num_trials,
-        "seed": cli.seed,
-        "success_rate": success_rate,
-        "trials": trials,
-    }
-    results_path = output_dir / "results.json"
-    with open(results_path, "w") as f:
-        json.dump(results, f, indent=2)
-
+    _, successes, success_rate = write_results(cli, results_path, trials)
     print(f"\nSuccess rate: {successes}/{cli.num_trials} => {success_rate * 100:.1f}%")
     print(f"Results written to {results_path}")
 
