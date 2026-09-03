@@ -14,12 +14,24 @@ GR00T_SP="${GR00T_SP:-/mnt/data/sftp/data/locht1/miniconda/envs/ego_gr00t/lib/py
 TASK_KEYS=(
     adjust_bottle
     blocks_ranking_rgb
+    click_bell
+    move_stapler_pad
+    press_stapler
+    stack_blocks_three
+    stack_blocks_two
     stack_bowls_three
+    stack_bowls_two
 )
 TASK_DEFS=(
     "adjust_bottle|demo_randomized|Use the correct arm to pick up the plastic drink bottle.|adjust_bottle_hard_4"
     "blocks_ranking_rgb|demo_randomized|Place the red block, green block, and blue block in the order of red, green, and blue from left to right, placing in a row.|blocks_ranking_rgb_hard_4"
+    "click_bell|demo_randomized|Click the bell's top center on the table.|click_bell_hard_4"
+    "move_stapler_pad|demo_randomized|Use appropriate arm to move the stapler to a colored mat.|move_stapler_pad_hard_4"
+    "press_stapler|demo_randomized|Use one arm to press the stapler.|press_stapler_hard_4"
+    "stack_blocks_three|demo_randomized|Stack the blue block on the green block, and the green block on the red block.|stack_blocks_three_hard_4"
+    "stack_blocks_two|demo_randomized|Stack the green block on the red block.|stack_blocks_two_hard_4"
     "stack_bowls_three|demo_randomized|Stack the three bowls on top of each other.|stack_bowls_three_hard_4"
+    "stack_bowls_two|demo_randomized|Stack the two bowls on top of each other.|stack_bowls_two_hard_4"
 )
 
 #TASK_DEFS=(
