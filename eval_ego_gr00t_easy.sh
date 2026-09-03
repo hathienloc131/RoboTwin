@@ -6,13 +6,17 @@ set -euo pipefail
 # stock bash, has no associative arrays).
 TASK_KEYS=(
     adjust_bottle
+    blocks_ranking_rgb
+    stack_bowls_three
 )
 #TASK_DEFS=(
-#    "adjust_bottle|demo_randomized|Use the correct arm to pick up the plastic drink bottle.|adjust_bottle_hard_4" 
+#    "adjust_bottle|demo_randomized|Use the correct arm to pick up the plastic drink bottle.|adjust_bottle_hard_4"
 #)
 
 TASK_DEFS=(
     "adjust_bottle|demo_clean_bg16|Use the correct arm to pick up the plastic drink bottle.|adjust_bottle_4"
+    "blocks_ranking_rgb|demo_clean_bg16|Place the red block, green block, and blue block in the order of red, green, and blue from left to right, placing in a row.|blocks_ranking_rgb_4"
+    "stack_bowls_three|demo_clean_bg16|Stack the three bowls on top of each other.|stack_bowls_three_4"
 )
 
 usage() {
@@ -70,14 +74,14 @@ run_task() {
     IFS='|' read -r task task_config instruction out_suffix <<< "$def"
 
     python script/eval_gr00t.py \
-        --model-path /home/lmaotan/vr_checkpoints/$MODEL \
+        --model-path /mnt/data/sftp/data/vla/vr_checkpoints/$MODEL \
         --task "$task" \
         --task-config "$task_config" \
         --instruction "$instruction" \
         --num-trials 100 \
         --seed 0 \
-        --n-action-steps $EXEC --output-dir ~/eval_robotwin/${MODEL}_exec${EXEC}/$out_suffix \
-        --device cuda:0 --gr00t-path /home/lmaotan/miniconda3/envs/ego_gr00t/lib/python3.10/site-packages
+        --n-action-steps $EXEC --output-dir /mnt/data/sftp/data/locht1/eval_robotwin/${MODEL}_exec${EXEC}/$out_suffix \
+        --device cuda:0 --gr00t-path /mnt/data/sftp/data/locht1/miniconda/envs/ego_gr00t/lib/python3.10/site-packages
 }
 
 for key in "${TASK_LIST[@]}"; do
