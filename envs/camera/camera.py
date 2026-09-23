@@ -57,6 +57,10 @@ class Camera:
 
         self.collect_head_camera = kwags["camera"].get("collect_head_camera", True)
         self.collect_wrist_camera = kwags["camera"].get("collect_wrist_camera", True)
+        # store segmentation as raw per-scene ids (uint16) instead of palette colors
+        self.segmentation_raw_id = (kwags.get("data_type") or {}).get("segmentation_raw_id", False)
+        # store depth as uint16 millimeters instead of float64
+        self.depth_uint16 = (kwags.get("data_type") or {}).get("depth_uint16", False)
 
         # embodiment = kwags.get('embodiment')
         # embodiment_config_path = os.path.join(CONFIGS_PATH, '_embodiment_config.yml')
@@ -379,6 +383,9 @@ class Camera:
         def _get_segmentation(camera, level="mesh"):
             # visual_id is the unique id of each visual shape
             seg_labels = camera.get_picture("Segmentation")  # [H, W, 4]
+            if self.segmentation_raw_id:
+                channel = 0 if level == "mesh" else 1
+                return seg_labels[..., channel].astype(np.uint16)
             colormap = sorted(set(ImageColor.colormap.values()))
             color_palette = np.array([ImageColor.getrgb(color) for color in colormap], dtype=np.uint8)
             if level == "mesh":
@@ -444,6 +451,9 @@ class Camera:
                 res[camera_name]["depth"] = _get_depth(camera)
                 res[camera_name]["depth"] *= rgba[camera_name]["rgba"][:, :, 3] / 255
         # res['head_sensor']['depth'] = _get_sensor_depth(self.head_sensor)
+        if self.depth_uint16:
+            for camera_name in res:
+                res[camera_name]["depth"] = np.clip(np.round(res[camera_name]["depth"]), 0, 65535).astype(np.uint16)
 
         return res
 

@@ -64,6 +64,10 @@ def create_hdf5_from_dict(hdf5_group, data_dict):
             if "rgb" in key:
                 encode_data, max_len = images_encoding(value)
                 hdf5_group.create_dataset(key, data=encode_data, dtype=f"S{max_len}")
+            elif value.ndim >= 3:
+                # image-like data (depth / segmentation): gzip, one chunk per frame
+                hdf5_group.create_dataset(key, data=value, chunks=(1, ) + value.shape[1:], compression="gzip",
+                                          compression_opts=4)
             else:
                 hdf5_group.create_dataset(key, data=value)
         else:
@@ -81,10 +85,15 @@ def pkl_files_to_hdf5_and_video(pkl_files, hdf5_path, video_path):
         pkl_file = load_pkl_file(pkl_file_path)
         append_data_to_structure(data_list, pkl_file)
 
-    images_to_video(np.array(data_list["observation"]["head_camera"]["rgb"]), out_path=video_path)
+    # write to temp files then rename, so an interrupted run never leaves a truncated episode behind
+    tmp_video_path = video_path + ".tmp.mp4"
+    images_to_video(np.array(data_list["observation"]["head_camera"]["rgb"]), out_path=tmp_video_path)
+    os.replace(tmp_video_path, video_path)
 
-    with h5py.File(hdf5_path, "w") as f:
+    tmp_hdf5_path = hdf5_path + ".tmp"
+    with h5py.File(tmp_hdf5_path, "w") as f:
         create_hdf5_from_dict(f, data_list)
+    os.replace(tmp_hdf5_path, hdf5_path)
 
 
 def process_folder_to_hdf5_video(folder_path, hdf5_path, video_path):
