@@ -50,7 +50,7 @@ def load_json(path, default):
 
 class Collector:
 
-    def __init__(self, task_name, task_config, embodiment, setting, episode_num, max_replay_attempts,
+    def __init__(self, task_name, task_config, embodiment, save_path, episode_num, max_replay_attempts,
                  max_seed_factor):
         with open(f"./task_config/{task_config}.yml", "r", encoding="utf-8") as f:
             args = yaml.load(f.read(), Loader=yaml.FullLoader)
@@ -69,12 +69,12 @@ class Collector:
         args["left_embodiment_config"] = get_embodiment_config(robot_file)
         args["right_embodiment_config"] = get_embodiment_config(robot_file)
         args["embodiment_name"] = embodiment
-        args["task_config"] = setting
-        args["save_path"] = os.path.join(args["save_path"], task_name, setting)
+        args["task_config"] = task_config
+        args["save_path"] = save_path
 
         self.args = args
         self.task_name = task_name
-        self.setting = setting
+        self.embodiment = embodiment
         self.save_path = args["save_path"]
         self.max_replay_attempts = max_replay_attempts
         self.max_seed_tries = args["episode_num"] * max_seed_factor
@@ -268,7 +268,7 @@ class Collector:
         for idx in range(args["episode_num"]):
             if os.path.exists(self._hdf5_path(idx)):
                 continue
-            print(f"\033[34mTask: {self.task_name} | {self.setting} | episode {idx}\033[0m")
+            print(f"\033[34mTask: {self.task_name} | {self.embodiment} | episode {idx}\033[0m")
             self._set_inflight("data", self.seed_list[idx], idx)
             try:
                 env.setup_demo(now_ep_num=idx, seed=self.seed_list[idx], **args)
@@ -301,7 +301,7 @@ class Collector:
 
     def run(self):
         self.recover()
-        print(f"\033[93m[{self.task_name} | {self.setting}] seeds: {len(self.seed_list)}/{self.args['episode_num']}, "
+        print(f"\033[93m[{self.task_name} | {self.embodiment}] seeds: {len(self.seed_list)}/{self.args['episode_num']}, "
               f"next seed: {self.progress['next_seed']}\033[0m")
         if not self.collect_seeds():
             return EXIT_GAVE_UP
@@ -311,14 +311,25 @@ class Collector:
             return EXIT_RETRY
 
         if not self.progress.get("instructions_done"):
-            ret = os.system(f"cd description && bash gen_episode_instructions.sh {self.task_name} {self.setting} "
-                            f"{self.args['language_num']}")
-            if ret == 0:
-                self.progress["instructions_done"] = True
-                self._save_progress()
-            else:
-                print(f"\033[93mWarning: instruction generation failed (exit {ret})\033[0m")
+            self.generate_instructions()
+            self.progress["instructions_done"] = True
+            self._save_progress()
         return EXIT_DONE
+
+    def generate_instructions(self):
+        """Same as description/gen_episode_instructions.sh, but reads/writes self.save_path."""
+        sys.path.append("./description/utils")
+        from generate_episode_instructions import extract_episodes_from_scene_info, generate_episode_descriptions
+
+        episodes = extract_episodes_from_scene_info(load_json(self.info_path, {}))
+        results = generate_episode_descriptions(self.task_name, episodes, self.args["language_num"])
+        out_dir = os.path.join(self.save_path, "instructions")
+        os.makedirs(out_dir, exist_ok=True)
+        for desc in results:
+            atomic_write_json(os.path.join(out_dir, f"episode{desc['episode_index']}.json"), {
+                "seen": desc.get("seen", []),
+                "unseen": desc.get("unseen", []),
+            })
 
 
 if __name__ == "__main__":
@@ -334,8 +345,8 @@ if __name__ == "__main__":
     parser.add_argument("task_name", type=str)
     parser.add_argument("task_config", type=str)
     parser.add_argument("embodiment", type=str)
-    parser.add_argument("--setting", type=str, default=None,
-                        help="Output folder name under data/<task>/ (default: <task_config>_<embodiment>)")
+    parser.add_argument("--save_path", type=str, default=None,
+                        help="Output folder (default: <save_path in yml>/<embodiment>/<task>)")
     parser.add_argument("-n", "--episode_num", type=int, default=None)
     parser.add_argument("--max_replay_attempts", type=int, default=2,
                         help="Replace an episode's seed after its replay fails/hangs this many times")
@@ -343,6 +354,9 @@ if __name__ == "__main__":
                         help="Give up after episode_num * factor seeds tried")
     a = parser.parse_args()
 
-    collector = Collector(a.task_name, a.task_config, a.embodiment, a.setting or f"{a.task_config}_{a.embodiment}",
-                          a.episode_num, a.max_replay_attempts, a.max_seed_factor)
+    if a.save_path is None:
+        with open(f"./task_config/{a.task_config}.yml", "r", encoding="utf-8") as f:
+            a.save_path = os.path.join(yaml.safe_load(f)["save_path"], a.embodiment, a.task_name)
+    collector = Collector(a.task_name, a.task_config, a.embodiment, a.save_path, a.episode_num,
+                          a.max_replay_attempts, a.max_seed_factor)
     sys.exit(collector.run())

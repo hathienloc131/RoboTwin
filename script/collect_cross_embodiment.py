@@ -1,11 +1,12 @@
 """Collect every task for every embodiment, restarting the worker when it crashes or hangs.
 
 Each (task, embodiment) runs script/collect_data_resumable.py in its own process group and writes to
-data/<task>/<task_config>_<embodiment>/. The worker updates status.json at the start of every
+<data_root>/<embodiment>/<task>/. The worker updates status.json at the start of every
 seed/episode; if one step runs longer than --episode_timeout the whole process group is killed and
 restarted, and the worker skips / replaces the seed that hung. Finished runs get a `.done` marker,
 so re-running this script simply picks up where it left off.
 """
+import glob
 import json
 import os
 import signal
@@ -96,9 +97,11 @@ def run_worker(cmd, save_path, worker_log, a):
 
 def main():
     p = ArgumentParser()
-    p.add_argument("--tasks", nargs="+", required=True, help="Task names, or a path to a .txt file (one per line)")
+    p.add_argument("--tasks", nargs="*", default=None,
+                   help="Task names, or a path to a .txt file (one per line). Default: every task in envs/")
     p.add_argument("--embodiments", nargs="+", default=DEFAULT_EMBODIMENTS)
     p.add_argument("--task_config", default="demo_clean_seg_depth")
+    p.add_argument("--data_root", default="./data", help="Output: <data_root>/<embodiment>/<task>/")
     p.add_argument("-n", "--episode_num", type=int, default=None)
     p.add_argument("--episode_timeout", type=int, default=900, help="Kill worker if one seed/episode exceeds this (s)")
     p.add_argument("--startup_timeout", type=int, default=600, help="Kill worker if it does not start within (s)")
@@ -110,18 +113,21 @@ def main():
     a = p.parse_args()
 
     tasks = a.tasks
-    if len(tasks) == 1 and os.path.isfile(tasks[0]):
+    if not tasks:
+        tasks = sorted(os.path.basename(f)[:-3] for f in glob.glob("envs/*.py")
+                       if not os.path.basename(f).startswith("_"))
+    elif len(tasks) == 1 and os.path.isfile(tasks[0]):
         with open(tasks[0]) as f:
             tasks = [t.strip() for t in f if t.strip() and not t.startswith("#")]
 
     os.makedirs("logs", exist_ok=True)
     main_log = os.path.join("logs", f"collect_{a.task_config}.log")
     summary = {}
+    log(f"{len(a.embodiments)} embodiments x {len(tasks)} tasks -> {a.data_root}/<embodiment>/<task>", main_log)
 
     for embodiment in a.embodiments:
         for task in tasks:
-            setting = f"{a.task_config}_{embodiment}"
-            save_path = os.path.join("data", task, setting)
+            save_path = os.path.join(a.data_root, embodiment, task)
             os.makedirs(save_path, exist_ok=True)
             done_marker = os.path.join(save_path, ".done")
             gave_up_marker = os.path.join(save_path, ".gave_up")
@@ -137,7 +143,7 @@ def main():
                 os.remove(gave_up_marker)
 
             cmd = [sys.executable, "script/collect_data_resumable.py", task, a.task_config, embodiment,
-                   "--setting", setting, "--max_replay_attempts", str(a.max_replay_attempts),
+                   "--save_path", save_path, "--max_replay_attempts", str(a.max_replay_attempts),
                    "--max_seed_factor", str(a.max_seed_factor)]
             if a.episode_num is not None:
                 cmd += ["-n", str(a.episode_num)]
