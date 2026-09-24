@@ -5,7 +5,8 @@ watchdog kill (see collect_cross_embodiment.py) the next run knows exactly what 
   - a seed that was being planned when the process died is skipped for good,
   - an episode whose replay died / failed `max_replay_attempts` times has its seed replaced.
 
-Exit codes: 0 = done, 3 = replay failed (restart me), 4 = gave up (too many failed seeds).
+Exit codes: 0 = done, 3 = replay failed (restart me), 4 = gave up (too many failed seeds),
+            5 = setup error (the first seeds all raised exceptions, e.g. wrong embodiment config).
 """
 import sys
 
@@ -14,6 +15,7 @@ sys.path.append("./")
 import json
 import os
 import time
+import traceback
 from argparse import ArgumentParser
 
 import yaml
@@ -21,7 +23,11 @@ import yaml
 from envs import *
 from script.collect_data import class_decorator, get_embodiment_config
 
-EXIT_DONE, EXIT_RETRY, EXIT_GAVE_UP = 0, 3, 4
+EXIT_DONE, EXIT_RETRY, EXIT_GAVE_UP, EXIT_SETUP_ERROR = 0, 3, 4, 5
+# embodiments whose urdf holds both arms; every other one is a single arm loaded twice, `arm_distance` apart
+DUAL_ARM_EMBODIMENTS = {"aloha-agilex"}
+# stop early when this many seeds in a row raise before any seed has succeeded
+MAX_SETUP_ERRORS = 10
 
 
 def atomic_write_json(path, obj):
@@ -51,7 +57,7 @@ def load_json(path, default):
 class Collector:
 
     def __init__(self, task_name, task_config, embodiment, save_path, episode_num, max_replay_attempts,
-                 max_seed_factor):
+                 max_seed_factor, arm_distance=0.6, reset_seed_budget=False):
         with open(f"./task_config/{task_config}.yml", "r", encoding="utf-8") as f:
             args = yaml.load(f.read(), Loader=yaml.FullLoader)
         if episode_num is not None:
@@ -62,10 +68,15 @@ class Collector:
         robot_file = embodiment_types[embodiment]["file_path"]
 
         args["task_name"] = task_name
-        args["embodiment"] = [embodiment]
         args["left_robot_file"] = robot_file
         args["right_robot_file"] = robot_file
-        args["dual_arm_embodied"] = True
+        if embodiment in DUAL_ARM_EMBODIMENTS:
+            args["embodiment"] = [embodiment]
+            args["dual_arm_embodied"] = True
+        else:  # same as `embodiment: [<arm>, <arm>, <distance>]` in collect_data.py
+            args["embodiment"] = [embodiment, embodiment, arm_distance]
+            args["embodiment_dis"] = arm_distance
+            args["dual_arm_embodied"] = False
         args["left_embodiment_config"] = get_embodiment_config(robot_file)
         args["right_embodiment_config"] = get_embodiment_config(robot_file)
         args["embodiment_name"] = embodiment
@@ -92,6 +103,11 @@ class Collector:
         self.progress.setdefault("replay_fail", {})
         self.progress.setdefault("replaced_seeds", [])
         self.progress.setdefault("inflight", None)
+        # seeds are counted from here for the give-up budget; reset when retrying a pair that gave up
+        self.progress.setdefault("seed_budget_start", 0)
+        if reset_seed_budget:
+            self.progress["seed_budget_start"] = self.progress["next_seed"]
+            self.progress.pop("last_error", None)
 
         self.task_env = class_decorator(task_name)
 
@@ -186,12 +202,13 @@ class Collector:
         args["need_plan"] = True
         args["save_data"] = False
         episode_num = args["episode_num"]
+        setup_errors = 0
 
         while len(self.seed_list) < episode_num:
             seed = self.progress["next_seed"]
-            if seed >= self.max_seed_tries:
-                print(f"\033[91mGave up: {seed} seeds tried, only {len(self.seed_list)} succeeded\033[0m")
-                return False
+            if seed - self.progress["seed_budget_start"] >= self.max_seed_tries:
+                print(f"\033[91mGave up: {self.max_seed_tries} seeds tried, only {len(self.seed_list)} succeeded\033[0m")
+                return EXIT_GAVE_UP
             self.progress["next_seed"] = seed + 1
             if seed in self.progress["skip_seeds"] or seed in self.seed_list:
                 continue
@@ -209,15 +226,24 @@ class Collector:
                 else:
                     print(f"simulate data episode {suc_num} fail! (seed = {seed})")
                 env.close_env()
+                setup_errors = 0
             except Exception as e:
-                print(f" -------------\nsimulate data episode {suc_num} fail! (seed = {seed})\nError: {e}\n -------------")
+                err = traceback.format_exc()
+                print(f" -------------\nsimulate data episode {suc_num} fail! (seed = {seed})\n{err} -------------")
+                setup_errors += 1
+                if setup_errors >= MAX_SETUP_ERRORS and not self.seed_list:
+                    # nothing ever worked: almost certainly a setup problem, not unlucky seeds
+                    self.progress["last_error"] = err
+                    self._set_inflight(None, None, None)
+                    print(f"\033[91mStopping: {setup_errors} seeds in a row raised before any success\033[0m")
+                    return EXIT_SETUP_ERROR
                 try:
                     env.close_env()
                 except Exception:
                     pass
                 time.sleep(1 if not isinstance(e, UnStableError) else 0.3)
             self._set_inflight(None, None, None)
-        return True
+        return EXIT_DONE
 
     def _dump_seg_id_map(self, idx):
         """Map raw segmentation ids to names: actor level = entity.per_scene_id, mesh level = render shape id."""
@@ -303,8 +329,9 @@ class Collector:
         self.recover()
         print(f"\033[93m[{self.task_name} | {self.embodiment}] seeds: {len(self.seed_list)}/{self.args['episode_num']}, "
               f"next seed: {self.progress['next_seed']}\033[0m")
-        if not self.collect_seeds():
-            return EXIT_GAVE_UP
+        ret = self.collect_seeds()
+        if ret != EXIT_DONE:
+            return ret
         if not self.args["collect_data"]:
             return EXIT_DONE
         if not self.collect_data():
@@ -350,6 +377,10 @@ if __name__ == "__main__":
     parser.add_argument("-n", "--episode_num", type=int, default=None)
     parser.add_argument("--max_replay_attempts", type=int, default=2,
                         help="Replace an episode's seed after its replay fails/hangs this many times")
+    parser.add_argument("--arm_distance", type=float, default=0.6,
+                        help="Distance (m) between the two arms for single-arm embodiments (embodiment_dis)")
+    parser.add_argument("--reset_seed_budget", action="store_true",
+                        help="Restart the give-up seed count (used when retrying a pair that gave up)")
     parser.add_argument("--max_seed_factor", type=int, default=20,
                         help="Give up after episode_num * factor seeds tried")
     a = parser.parse_args()
@@ -358,5 +389,5 @@ if __name__ == "__main__":
         with open(f"./task_config/{a.task_config}.yml", "r", encoding="utf-8") as f:
             a.save_path = os.path.join(yaml.safe_load(f)["save_path"], a.embodiment, a.task_name)
     collector = Collector(a.task_name, a.task_config, a.embodiment, a.save_path, a.episode_num,
-                          a.max_replay_attempts, a.max_seed_factor)
+                          a.max_replay_attempts, a.max_seed_factor, a.arm_distance, a.reset_seed_budget)
     sys.exit(collector.run())

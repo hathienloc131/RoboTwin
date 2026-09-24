@@ -17,7 +17,7 @@ from argparse import ArgumentParser
 from datetime import datetime
 
 DEFAULT_EMBODIMENTS = ["aloha-agilex", "franka-panda", "ARX-X5", "ur5-wsg"]
-EXIT_DONE, EXIT_RETRY, EXIT_GAVE_UP = 0, 3, 4
+EXIT_DONE, EXIT_RETRY, EXIT_GAVE_UP, EXIT_SETUP_ERROR = 0, 3, 4, 5
 
 
 def log(msg, log_file=None):
@@ -109,6 +109,8 @@ def main():
                    help="Give up a (task, embodiment) after this many consecutive restarts without new data")
     p.add_argument("--max_replay_attempts", type=int, default=2)
     p.add_argument("--max_seed_factor", type=int, default=20)
+    p.add_argument("--arm_distance", type=float, default=0.6,
+                   help="Distance (m) between the two arms for single-arm embodiments (all except aloha-agilex)")
     p.add_argument("--retry_gave_up", action="store_true", help="Retry (task, embodiment) pairs marked .gave_up")
     a = p.parse_args()
 
@@ -136,15 +138,17 @@ def main():
             if os.path.exists(done_marker):
                 summary[key] = "done (skipped)"
                 continue
+            retrying = False
             if os.path.exists(gave_up_marker):
                 if not a.retry_gave_up:
                     summary[key] = "gave up (skipped)"
                     continue
                 os.remove(gave_up_marker)
+                retrying = True
 
             cmd = [sys.executable, "script/collect_data_resumable.py", task, a.task_config, embodiment,
                    "--save_path", save_path, "--max_replay_attempts", str(a.max_replay_attempts),
-                   "--max_seed_factor", str(a.max_seed_factor)]
+                   "--max_seed_factor", str(a.max_seed_factor), "--arm_distance", str(a.arm_distance)]
             if a.episode_num is not None:
                 cmd += ["-n", str(a.episode_num)]
             worker_log = os.path.join(save_path, "collect.log")
@@ -154,13 +158,21 @@ def main():
             while True:
                 attempt += 1
                 before = count_progress(save_path)
-                result = run_worker(cmd, save_path, worker_log, a)
+                result = run_worker(cmd + (["--reset_seed_budget"] if retrying and attempt == 1 else []), save_path,
+                                    worker_log, a)
                 after = count_progress(save_path)
 
                 if result == EXIT_DONE:
                     open(done_marker, "w").close()
                     summary[key] = "done"
                     log(f"DONE  {key} (attempt {attempt})", main_log)
+                    break
+                if result == EXIT_SETUP_ERROR:
+                    open(gave_up_marker, "w").close()
+                    err = (read_json(os.path.join(save_path, "progress.json")) or {}).get("last_error", "")
+                    last_line = err.strip().splitlines()[-1] if err.strip() else "see collect.log"
+                    summary[key] = f"setup error: {last_line}"
+                    log(f"SETUP ERROR {key}: {last_line}\n{err}(full log: {worker_log})", main_log)
                     break
                 if result == EXIT_GAVE_UP:
                     open(gave_up_marker, "w").close()
