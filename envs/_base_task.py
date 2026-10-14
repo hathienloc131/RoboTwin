@@ -13,6 +13,7 @@ from collections import OrderedDict
 import torch, random
 
 from .utils import *
+from .utils.human_motion import humanize_arm_traj, humanize_gripper
 import math
 from .robot import Robot
 from .camera import Camera
@@ -104,6 +105,7 @@ class Base_Task(gym.Env):
         self.eval_video_path = kwags.get("eval_video_save_dir", None)
 
         self.save_freq = kwags.get("save_freq")
+        self.human_motion = kwags.get("human_motion", None)  # {smooth_sigma, noise_std, noise_sigma} or None
         self.world_pcd = None
 
         self.size_dict = list()
@@ -1422,6 +1424,25 @@ class Base_Task(gym.Env):
             control_seq["right_gripper"],
         )
 
+        if self.human_motion:
+            if left_arm is not None:
+                left_arm = humanize_arm_traj(left_arm, self.human_motion)
+            if right_arm is not None:
+                right_arm = humanize_arm_traj(right_arm, self.human_motion)
+            left_gripper = humanize_gripper(left_gripper, self.human_motion)
+            right_gripper = humanize_gripper(right_gripper, self.human_motion)
+
+            # Humanized arm segments end with non-zero velocity so they blend into the next one. An arm
+            # that is not driven in this call would keep that stale velocity target, so stop it here.
+            last = self.__dict__.setdefault("_human_last_cmd", {})
+            for tag, arm in (("left", left_arm), ("right", right_arm)):
+                if arm is not None:
+                    last[tag] = (arm["position"][-1], arm["velocity"][-1])
+                elif tag in last:
+                    pos, vel = last.pop(tag)
+                    if np.any(np.abs(vel) > 1e-6):
+                        self.robot.set_arm_joints(pos, np.zeros_like(vel), tag)
+
         save_freq = self.save_freq if save_freq == -1 else save_freq
         if save_freq != None:
             self._take_picture()
@@ -1438,6 +1459,11 @@ class Base_Task(gym.Env):
             max_control_len = max(max_control_len, right_gripper["num_step"])
 
         for control_idx in range(max_control_len):
+
+            if self.human_motion:  # an arm that finished before the other one stops pushing past its target
+                for tag, arm in (("left", left_arm), ("right", right_arm)):
+                    if arm is not None and control_idx == arm["position"].shape[0]:
+                        self.robot.set_arm_joints(arm["position"][-1], np.zeros_like(arm["velocity"][-1]), tag)
 
             if (left_arm is not None and control_idx < left_arm["position"].shape[0]):  # control left arm
                 self.robot.set_arm_joints(
