@@ -140,16 +140,16 @@ def main():
     cfg_path = os.path.join(DST, "config.yml")
     cfg = open(cfg_path).read()
     cfg = re.sub(r"static_camera_list:.*?(?=\n# - name|\Z)", """static_camera_list:
-# egocentric view: head behind/above the shoulders, looking down at the hands and the table
+# same as franka-panda's head camera, raised to z=1.45
 - name: head_camera
   position:
-  - 0.0
-  - -0.80
-  - 1.25
+  - -0.032
+  - -0.45
+  - 1.45
   forward:
   - 0
-  - 0.7
-  - -0.4
+  - 0.6
+  - -0.8
   left:
   - -1
   - 0
