@@ -501,6 +501,12 @@ class Base_Task(gym.Env):
         # pointcloud
         if self.data_type.get("pointcloud", False):
             pkl_dic["pointcloud"] = self.cameras.get_pcd(self.data_type.get("conbine", False))
+        # scene graph ground truth (object poses, head-camera masks, gripper contacts)
+        if self.data_type.get("scene_graph", False):
+            from .utils.scene_graph_logger import scene_graph_obs
+
+            head = self.cameras.static_camera_list[self.cameras.static_camera_name.index("head_camera")]
+            pkl_dic["scene_graph"] = scene_graph_obs(self, head)
 
         self.now_obs = deepcopy(pkl_dic)
         return pkl_dic
