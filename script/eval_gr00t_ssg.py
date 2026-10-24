@@ -11,6 +11,8 @@ build_graph are rescaled to chunk rate (held_by debounce 1, activity per chunk).
 
 Extra flags (everything else as eval_gr00t_parallel.py):
   --graph-mode M     oracle (default): GT graph each call; none: no graph key
+  --action-space S   ee (default): camera-frame EEF checkpoints (GR00TRoboTwinAdapter);
+                     joint: 14-D joint checkpoints (gr00t_joint_adapter.py), take_action("qpos")
   --ssg-converter D  lerobot-convert checkout with the SSG loader
                      (default /mnt/data/sftp/data/locht1/workspace/lerobot-convert_ssg)
 Run with PYTHONPATH pointing at the GR00T checkout whose Gr00tPolicy accepts "graph".
@@ -76,6 +78,9 @@ def parse_args():
     # Reuse eval_gr00t.py's parser so the two scripts can never drift apart.
     argv, num_envs = list(sys.argv[1:]), 4
     graph_mode = _pop_flag(argv, "--graph-mode", "oracle")
+    action_space = _pop_flag(argv, "--action-space", "ee")
+    if action_space not in ("ee", "joint"):
+        raise SystemExit("--action-space ee|joint")
     ssg_converter = _pop_flag(argv, "--ssg-converter", SSG_CONVERTER)
     if graph_mode not in ("oracle", "none"):
         raise SystemExit("--graph-mode oracle|none")
@@ -92,7 +97,7 @@ def parse_args():
     cli = seq.parse_args()
     cli.num_envs = num_envs
     cli.per_trial_noise = per_trial_noise
-    cli.graph_mode, cli.ssg_converter = graph_mode, ssg_converter
+    cli.graph_mode, cli.ssg_converter, cli.action_space = graph_mode, ssg_converter, action_space
     if cli.num_envs < 1:
         raise SystemExit("--num-envs must be >= 1")
     return cli
@@ -124,7 +129,12 @@ def _slim_obs(obs: dict, camera_name: str) -> dict:
         if wrist in obs["observation"] and "rgb" in obs["observation"][wrist]:
             out[wrist] = {"rgb": obs["observation"][wrist]["rgb"]}
     out[camera_name]["intrinsic_cv"] = cam["intrinsic_cv"]
-    return {"observation": out, "endpose": obs["endpose"], "scene_graph": obs.get("scene_graph")}
+    return {
+        "observation": out,
+        "endpose": obs["endpose"],
+        "joint_action": {"vector": obs["joint_action"]["vector"]},
+        "scene_graph": obs.get("scene_graph"),
+    }
 
 
 def _start_video(task_env, video_path: str, video_size: str) -> None:
@@ -141,7 +151,7 @@ def _start_video(task_env, video_path: str, video_size: str) -> None:
 
 
 def env_worker(conn, task: str, task_config: str, instruction: str, n_action_steps: int,
-               camera_name: str, video_dir: str | None) -> None:
+               camera_name: str, video_dir: str | None, action_type: str = "ee") -> None:
     """One RoboTwin env. Protocol (main -> worker):
         ("reset", seed)          -> ("obs", obs) | ("unstable", msg) | ("fatal", err)
         ("step", waypoints)      -> ("obs", obs) | ("done", success, err_or_None) | ("fatal", err)
@@ -194,7 +204,7 @@ def env_worker(conn, task: str, task_config: str, instruction: str, n_action_ste
                     has_video = True
             else:  # step
                 for waypoint in msg[1][:n_action_steps]:
-                    task_env.take_action(waypoint, action_type="ee")
+                    task_env.take_action(waypoint, action_type=action_type)
                     if task_env.eval_success:
                         break
                 if task_env.eval_success:
@@ -368,7 +378,7 @@ def main():
         p = ctx.Process(
             target=env_worker,
             args=(child, cli.task, cli.task_config, cli.instruction, cli.n_action_steps,
-                  cli.camera_name, str(output_dir)),
+                  cli.camera_name, str(output_dir), "qpos" if cli.action_space == "joint" else "ee"),
             daemon=True,
         )
         p.start()
@@ -382,7 +392,10 @@ def main():
 
     torch.manual_seed(cli.seed)
     history = GraphHistory(cli.task, cli.camera_name, cli.ssg_converter, cli.n_action_steps)
-    adapter = seq.GR00TRoboTwinAdapter(
+    adapter_cls = seq.GR00TRoboTwinAdapter
+    if cli.action_space == "joint":
+        from gr00t_joint_adapter import GR00TRoboTwinJointAdapter as adapter_cls
+    adapter = adapter_cls(
         model_path=cli.model_path,
         embodiment_tag=cli.embodiment_tag,
         device=cli.device,
