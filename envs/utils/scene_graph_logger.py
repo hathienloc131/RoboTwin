@@ -10,6 +10,10 @@ Enabled with ``data_type.scene_graph: true`` in a task config; get_obs then adds
 - ``head_mask_px`` (N,): visible pixels of the object in the head camera
 - ``head_mask_bbox`` (N, 4): visible-mask box u0, v0, u1, v1 (pixels)
 - ``head_mask_centroid`` (N, 2): visible-mask centroid u, v (pixels)
+- ``head_vis_centroid`` (N, 3): mean of the object's visible surface points (head-camera
+  actor mask + rendered depth), OpenCV camera frame -- the same mask + depth centroid the
+  human labels use, unlike the amodal GT pose centre
+- ``head_vis_points`` (N, VIS_POINTS, 3): random sample of those points (NaN padded)
 - ``gripper_contact`` (N, 2, 2): object touches [left, right] arm x [finger link7, link8] (0 / 1)
 
 Slot order and names come from SSG_OBJECTS; the converter
@@ -19,6 +23,8 @@ Slot order and names come from SSG_OBJECTS; the converter
 import numpy as np
 
 MAX_OBJECTS = 3
+VIS_POINTS = 64
+_GL_TO_CV = np.array([1.0, -1.0, -1.0])  # SAPIEN camera (x right, y up, z back) -> OpenCV
 
 # task -> [(slot_name, env attribute)]; slot order is the graph's node order
 SSG_OBJECTS = {
@@ -78,8 +84,12 @@ def scene_graph_obs(task, head_camera) -> dict:
         "head_mask_px": np.zeros(n, dtype=np.int64),
         "head_mask_bbox": np.full((n, 4), np.nan),
         "head_mask_centroid": np.full((n, 2), np.nan),
+        "head_vis_centroid": np.full((n, 3), np.nan),
+        "head_vis_points": np.full((n, VIS_POINTS, 3), np.nan),
         "gripper_contact": np.zeros((n, 2, 2), dtype=np.int64),
     }
+    position = head_camera.get_picture("Position")[..., :3]
+    rng = np.random.default_rng(task.FRAME_IDX if hasattr(task, "FRAME_IDX") else 0)
 
     # the AABB is constant within an episode; cache it on the task object
     cache = getattr(task, "_ssg_aabb_cache", None)
@@ -104,6 +114,10 @@ def scene_graph_obs(task, head_camera) -> dict:
         if len(uu):
             out["head_mask_bbox"][i] = [uu.min(), vv.min(), uu.max(), vv.max()]
             out["head_mask_centroid"][i] = [uu.mean(), vv.mean()]
+            pts = position[vv, uu].astype(np.float64) * _GL_TO_CV
+            out["head_vis_centroid"][i] = pts.mean(0)
+            pick = rng.choice(len(pts), size=min(VIS_POINTS, len(pts)), replace=False)
+            out["head_vis_points"][i, : len(pick)] = pts[pick]
 
     for contact in task.scene.get_contacts():
         if not any(p.separation < CONTACT_SEPARATION for p in contact.points):
