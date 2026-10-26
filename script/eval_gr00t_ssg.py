@@ -82,6 +82,11 @@ def parse_args():
     if action_space not in ("ee", "joint"):
         raise SystemExit("--action-space ee|joint")
     ssg_converter = _pop_flag(argv, "--ssg-converter", SSG_CONVERTER)
+    # --lean-env: joint-space envs skip the CuRobo planners (GPU memory -> more envs) and
+    # envs without --graph-mode oracle skip the scene-graph renders; actions are unchanged
+    lean_env = "--lean-env" in argv
+    while "--lean-env" in argv:
+        argv.remove("--lean-env")
     if graph_mode not in ("oracle", "none"):
         raise SystemExit("--graph-mode oracle|none")
     if "--num-envs" in argv:
@@ -98,6 +103,7 @@ def parse_args():
     cli.num_envs = num_envs
     cli.per_trial_noise = per_trial_noise
     cli.graph_mode, cli.ssg_converter, cli.action_space = graph_mode, ssg_converter, action_space
+    cli.lean_env = lean_env
     if cli.num_envs < 1:
         raise SystemExit("--num-envs must be >= 1")
     return cli
@@ -151,7 +157,8 @@ def _start_video(task_env, video_path: str, video_size: str) -> None:
 
 
 def env_worker(conn, task: str, task_config: str, instruction: str, n_action_steps: int,
-               camera_name: str, video_dir: str | None, action_type: str = "ee") -> None:
+               camera_name: str, video_dir: str | None, action_type: str = "ee",
+               lean_env: bool = False, graph_mode: str = "oracle") -> None:
     """One RoboTwin env. Protocol (main -> worker):
         ("reset", seed)          -> ("obs", obs) | ("unstable", msg) | ("fatal", err)
         ("step", waypoints)      -> ("obs", obs) | ("done", success, err_or_None) | ("fatal", err)
@@ -167,7 +174,9 @@ def env_worker(conn, task: str, task_config: str, instruction: str, n_action_ste
     from eval_policy import class_decorator
 
     args, camera_config = seq.load_task_args(task, task_config)
-    args.setdefault("data_type", {})["scene_graph"] = True
+    args.setdefault("data_type", {})["scene_graph"] = not (lean_env and graph_mode != "oracle")
+    if lean_env and action_type == "qpos":
+        args["skip_curobo"] = True
     video_size = f"{camera_config['w']}x{camera_config['h']}"
     args["eval_video_save_dir"] = video_dir
     task_env = class_decorator(task)
@@ -378,7 +387,8 @@ def main():
         p = ctx.Process(
             target=env_worker,
             args=(child, cli.task, cli.task_config, cli.instruction, cli.n_action_steps,
-                  cli.camera_name, str(output_dir), "qpos" if cli.action_space == "joint" else "ee"),
+                  cli.camera_name, str(output_dir), "qpos" if cli.action_space == "joint" else "ee",
+                  cli.lean_env, cli.graph_mode),
             daemon=True,
         )
         p.start()
