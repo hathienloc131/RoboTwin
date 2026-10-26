@@ -82,6 +82,8 @@ def parse_args():
     if action_space not in ("ee", "joint"):
         raise SystemExit("--action-space ee|joint")
     ssg_converter = _pop_flag(argv, "--ssg-converter", SSG_CONVERTER)
+    # --object-names "red block;green block": object list for relational (phase R) models
+    object_names = _pop_flag(argv, "--object-names", "")
     # --lean-env: joint-space envs skip the CuRobo planners (GPU memory -> more envs) and
     # envs without --graph-mode oracle skip the scene-graph renders; actions are unchanged
     lean_env = "--lean-env" in argv
@@ -104,6 +106,7 @@ def parse_args():
     cli.per_trial_noise = per_trial_noise
     cli.graph_mode, cli.ssg_converter, cli.action_space = graph_mode, ssg_converter, action_space
     cli.lean_env = lean_env
+    cli.object_names = [x.strip() for x in object_names.split(";") if x.strip()]
     if cli.num_envs < 1:
         raise SystemExit("--num-envs must be >= 1")
     return cli
@@ -294,6 +297,7 @@ def stack_observations(obs_list: list[dict]) -> dict:
         "language": {k: sum((o["language"][k] for o in obs_list), []) for k in first["language"]},
         **({"graph": {k: np.concatenate([o["graph"][k] for o in obs_list], 0) for k in first["graph"]}}
            if "graph" in first else {}),
+        **({"object_names": [o["object_names"] for o in obs_list]} if "object_names" in first else {}),
     }
 
 
@@ -510,6 +514,8 @@ def main():
                 obs_list = []
                 for w, o in batch:
                     g = adapter.build_observation(o, cli.instruction)
+                    if cli.object_names:  # phase R relational models: the prompt's object list
+                        g["object_names"] = cli.object_names
                     if cli.graph_mode == "oracle":
                         g["graph"] = history.graph(w, o)
                     obs_list.append(g)
