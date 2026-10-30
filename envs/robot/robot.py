@@ -16,6 +16,17 @@ from .planner import CuroboPlanner
 import torch.multiprocessing as mp
 
 
+class _GripperOnlyPlanner:
+    """Stands in for CuroboPlanner when Robot.skip_curobo is set: env setup still opens the
+    grippers through plan_grippers (same interpolation as CuroboPlanner.plan_grippers);
+    arm planning (the scripted expert) is not available."""
+
+    def plan_grippers(self, now_val, target_val):
+        num_step = 200
+        vals = np.linspace(now_val, target_val, num_step)
+        return {"num_step": num_step, "per_step": (target_val - now_val) / num_step, "result": vals}
+
+
 class Robot:
 
     def __init__(self, scene, need_topp=False, **kwargs):
@@ -36,6 +47,9 @@ class Robot:
         right_robot_file = kwargs["right_robot_file"]
 
         self.need_topp = need_topp
+        # eval in joint space only needs the mplib TOPP planners; skipping the two CuRobo
+        # planners saves several GB of GPU memory per env (set by eval_gr00t_ssg --lean-env)
+        self.skip_curobo = kwargs.get("skip_curobo", False)
 
         self.left_urdf_path = os.path.join(left_robot_file, left_embodiment_args["urdf_path"])
         self.left_srdf_path = left_embodiment_args.get("srdf_path", None)
@@ -132,7 +146,8 @@ class Robot:
                 self.right_conn.send({"cmd": "reset"})
                 _ = self.right_conn.recv()
         else:
-            if not isinstance(self.left_planner, CuroboPlanner) or not isinstance(self.right_planner, CuroboPlanner):
+            if not self.skip_curobo and (not isinstance(self.left_planner, CuroboPlanner)
+                                         or not isinstance(self.right_planner, CuroboPlanner)):
                 self.set_planner(scene=scene)
 
         self.init_joints()
@@ -264,7 +279,10 @@ class Robot:
             abs_left_curobo_yml_path = abs_left_curobo_yml_path.replace("curobo.yml", "curobo_left.yml")
             abs_right_curobo_yml_path = abs_right_curobo_yml_path.replace("curobo.yml", "curobo_right.yml")
 
-        if not self.communication_flag:
+        if self.skip_curobo:
+            self.communication_flag = False
+            self.left_planner, self.right_planner = _GripperOnlyPlanner(), _GripperOnlyPlanner()
+        elif not self.communication_flag:
             self.left_planner = CuroboPlanner(self.left_entity_origion_pose,
                                               self.left_arm_joints_name,
                                               [joint.get_name() for joint in self.left_entity.get_active_joints()],
