@@ -55,6 +55,7 @@ round differently, and the sim amplifies that), so compare rates, not individual
         --gr00t-path /home/user/miniconda3/envs/ego_gr00t/lib/python3.10/site-packages
 """
 
+import json
 import multiprocessing as mp
 import os
 import subprocess
@@ -74,9 +75,98 @@ import numpy as np  # noqa: E402
 import eval_gr00t as seq  # noqa: E402
 
 
+class EffectLoop:
+    """--effect-mode (E2, ego_gr00t_ssg_r2 effect_module.py; relational_effect_vla.md 2.5): per env,
+    the goal is fixed from the goal head at the episode's first chunk; the high level's effect is
+    committed and passed back as effect_override until the abstract state shows it achieved for
+    2 chunks (add atoms present, delete atoms absent in sigma-hat) or it times out after
+    `timeout` chunks, then the high level is queried again (re-planning / recovery). Pressed
+    atoms are latched as was_pressed (a press lasts a few frames). Every chunk is logged to
+    <output>/effect_log/seed<s>.jsonl (state atoms, effect, achieved, effects-to-go)."""
+
+    S, RH = 5, 13
+    PRESSED, WAS = 4, 12  # relation indices: pressed in sigma-hat, was_pressed in the high level's
+    RELS = ["holding", "touching", "on", "on_table", "pressed", "left_of", "next_to", "lifted",
+            "gripper_closed"]
+    NODES = ["O1", "O2", "O3", "R", "L"]
+
+    def __init__(self, output_dir, timeout: int = 6):
+        import numpy as np
+
+        self.np, self.timeout, self.state = np, timeout, {}
+        self.dir = Path(output_dir) / "effect_log"
+        self.dir.mkdir(parents=True, exist_ok=True)
+
+    def reset(self, w: int, seed: int) -> None:
+        np = self.np
+        self.state[w] = dict(seed=seed, commit=None, since=0, streak=0, goal=None,
+                             was=np.zeros(self.S, np.float32), chunk=0)
+        (self.dir / f"seed{seed}.jsonl").write_text("")
+
+    def inputs(self, ws: list[int]) -> dict:
+        np, B = self.np, len(ws)
+        ov = np.full((B, 4), -1, np.int64)
+        goal = np.full((B, self.S, self.S, self.RH), -1, np.int64)
+        lat = np.zeros((B, self.S, self.S, self.RH), np.float32)
+        for b, w in enumerate(ws):
+            st = self.state[w]
+            if st["commit"] is not None:
+                ov[b] = st["commit"]
+            if st["goal"] is not None:
+                goal[b] = st["goal"]
+            idx = np.arange(self.S)
+            lat[b, idx, idx, self.WAS] = st["was"]
+        return dict(effect_override=ov, goal_override=goal, hl_sigma=lat)
+
+    def atoms(self, x, thr=0.5) -> list[str]:
+        np = self.np
+        return [f"{self.RELS[r]}({self.NODES[s]}" + ("" if s == o else f",{self.NODES[o]}") + ")"
+                for s, o, r in zip(*np.nonzero(x > thr))]
+
+    def update(self, ws: list[int], info: dict) -> None:
+        np = self.np
+        for b, w in enumerate(ws):
+            st = self.state[w]
+            sig = info["sigma_hat"][b]
+            add, dele = info["effect_add"][b], info["effect_del"][b]
+            on = sig > 0.5
+            pressed = sig[..., self.PRESSED].diagonal() > 0.5
+            st["was"] = np.maximum(st["was"], pressed.astype(np.float32))
+            achieved = None
+            if st["commit"] is not None:  # the effect executed in the chunk that led here
+                need = add > 0.5
+                pressed_objs = np.nonzero(need[..., self.PRESSED].diagonal())[0]
+                need[..., self.PRESSED] = False  # momentary: achieved once seen (latched)
+                p_ok = bool((st["was"][pressed_objs] > 0).all()) if len(pressed_objs) else True
+                achieved = bool(p_ok and (on | ~need).all() and not (on & (dele > 0.5)).any())
+                st["streak"] = st["streak"] + 1 if achieved else 0
+                st["since"] += 1
+                if st["streak"] >= 2 or st["since"] >= self.timeout:
+                    st["commit"], st["since"], st["streak"] = None, 0, 0
+            elif not bool(info["effect_done"][b]):
+                st["commit"] = np.concatenate([[int(info["effect_slot"][b])],
+                                               info["effect_bind"][b].astype(np.int64)])
+                st["since"], st["streak"] = 0, 0
+            if st["goal"] is None:
+                st["goal"] = info["goal"][b].astype(np.int64)
+            with open(self.dir / f"seed{st['seed']}.jsonl", "a") as f:
+                f.write(json.dumps(dict(
+                    chunk=st["chunk"], sigma=self.atoms(sig), slot=int(info["effect_slot"][b]),
+                    bind=info["effect_bind"][b].tolist(), done=bool(info["effect_done"][b]),
+                    togo=round(float(info["effect_togo"][b]), 2), add=self.atoms(add), dele=self.atoms(dele),
+                    achieved=achieved, committed=None if st["commit"] is None else st["commit"].tolist(),
+                    was_pressed=st["was"].tolist())) + "\n")
+            st["chunk"] += 1
+
+
 def parse_args():
     # Reuse eval_gr00t.py's parser so the two scripts can never drift apart.
     argv, num_envs = list(sys.argv[1:]), 4
+    # --effect-mode: E2 test-time loop (EffectLoop); --effect-timeout K chunks per committed effect
+    effect_mode = "--effect-mode" in argv
+    while "--effect-mode" in argv:
+        argv.remove("--effect-mode")
+    effect_timeout = int(_pop_flag(argv, "--effect-timeout", "6"))
     graph_mode = _pop_flag(argv, "--graph-mode", "oracle")
     action_space = _pop_flag(argv, "--action-space", "ee")
     if action_space not in ("ee", "joint"):
@@ -107,6 +197,7 @@ def parse_args():
     cli.graph_mode, cli.ssg_converter, cli.action_space = graph_mode, ssg_converter, action_space
     cli.lean_env = lean_env
     cli.object_names = [x.strip() for x in object_names.split(";") if x.strip()]
+    cli.effect_mode, cli.effect_timeout = effect_mode, effect_timeout
     if cli.num_envs < 1:
         raise SystemExit("--num-envs must be >= 1")
     return cli
@@ -416,6 +507,7 @@ def main():
         camera_name=cli.camera_name,
     )
 
+    effect_loop = EffectLoop(output_dir, cli.effect_timeout) if cli.effect_mode else None
     next_seed = trials[-1]["seed"] + 1 if trials else cli.seed
     accepted = 0           # seeds whose setup did not raise UnStableError
     pending_setup = 0      # seeds dispatched whose stability is not known yet
@@ -432,6 +524,8 @@ def main():
         seed_of[w] = next_seed
         resolved[next_seed] = "setup"
         history.reset(w)
+        if effect_loop is not None:
+            effect_loop.reset(w, next_seed)
         conns[w].send(("reset", next_seed))
         next_seed += 1
         pending_setup += 1
@@ -520,11 +614,16 @@ def main():
                         g["graph"] = history.graph(w, o)
                     obs_list.append(g)
                 gr00t_obs = stack_observations(obs_list)
+                ws = [w for w, _ in batch]
+                if effect_loop is not None:
+                    gr00t_obs["model_inputs"] = effect_loop.inputs(ws)
                 if cli.per_trial_noise:
                     with PerRowNoise(torch, [noise_gen[seed_of[w]] for w, _ in batch]):
-                        action, _ = adapter.policy.get_action(gr00t_obs)
+                        action, info = adapter.policy.get_action(gr00t_obs)
                 else:
-                    action, _ = adapter.policy.get_action(gr00t_obs)
+                    action, info = adapter.policy.get_action(gr00t_obs)
+                if effect_loop is not None:
+                    effect_loop.update(ws, info)
                 for b, (w, o) in enumerate(batch):
                     extrinsic_cv = o["observation"][cli.camera_name]["extrinsic_cv"]
                     conns[w].send(("step", adapter.decode_action_chunk(action, extrinsic_cv, b)))
